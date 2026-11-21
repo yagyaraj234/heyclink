@@ -562,3 +562,11 @@ test('processCall reuses the last household purchase when a quantity is omitted'
   const result = await processCall({audioPath: 'note', householdId: h.id}, household, {stt, llm});
   assert.deepEqual(result.extraction.groceries.map(l => [l.qty, l.unit]), [[1.5, 'kg'], [1, 'bunch']]);
 });
+
+test('processCall schedules an explicit grocery deadline in household local time', async () => {
+  const {stt} = fakeStt('pyaaz shaam chhe baje tak chahiye', 'hi');
+  const {llm} = fakeLlm({ groceries:[{raw:'pyaaz',item:'onion',itemWord:'pyaaz',qtyPhrase:'',qty:1,unit:'packet',confidence:1}],
+    neededBy:'2026-11-21T18:00:00+05:30',notes:[] });
+  const result = await processCall({audioPath:'note',householdId:h.id}, h, {stt,llm}, {now:new Date('2026-11-21T10:00:00Z')});
+  assert.equal((result.extraction as {neededBy?:string}).neededBy, '2026-11-21T12:30:00.000Z');
+});

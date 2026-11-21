@@ -10,7 +10,7 @@ import { openaiStt } from "./adapters/openai-stt.ts";
 import { planMeals, weekday } from "./meals.ts";
 
 /** Internal extension, like ExtractionWithAmbiguous: `cookOff` = the YYYY-MM-DD the cook says she won't come. */
-export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string; stockouts?: string[] };
+export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string; stockouts?: string[]; neededBy?: string };
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -27,6 +27,7 @@ interface LlmExtraction {
   groceries: LlmLine[];
   advance: { amount: number; reason: string | null } | null;
   notes: string[];
+  neededBy?: string | null;
   cookOff?: string | null; // optional in code only, like `requested`
 }
 
@@ -35,7 +36,7 @@ const nullable = (type: string) => ({ type: [type, "null"] });
 export const EXTRACTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["groceries", "advance", "notes", "cookOff"],
+  required: ["groceries", "advance", "notes", "cookOff", "neededBy"],
   properties: {
     groceries: {
       type: "array",
@@ -78,6 +79,7 @@ export const EXTRACTION_SCHEMA = {
       ],
     },
     notes: { type: "array", items: { type: "string" } },
+    neededBy: { ...nullable("string"), description: "Only if the cook gives a grocery deadline: ISO 8601 local time in India with +05:30. For dinner without a stated hour use 18:00 on the requested date. Otherwise null." },
     cookOff: { ...nullable("string"), description: "YYYY-MM-DD the cook won't come, said or asked for ('kal nahi aaungi', 'Sunday chutti', 'Sunday chutti chahiye', 'parso chhutti lungi'): the next such day counted from Today; null if she doesn't mention a day off" },
   },
 } as const;
@@ -215,6 +217,10 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     groceries: lines.filter((l): l is GroceryLine => l !== undefined && !("candidates" in l)),
     notes: out.notes,
   };
+  if (out.neededBy && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})$/.test(out.neededBy)) {
+    const deadline = Date.parse(out.neededBy);
+    if (deadline > now.getTime()) extraction.neededBy = new Date(deadline).toISOString();
+  }
   if (stockouts.size) extraction.stockouts = [...stockouts];
   const ambiguous = lines.filter((l): l is Ambiguous => l !== undefined && "candidates" in l);
   if (ambiguous.length) extraction.ambiguous = ambiguous;
