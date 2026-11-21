@@ -46,12 +46,15 @@ setInterval(() => void runDue(new Date(), store, swiggy, expoPush).catch(console
 const origin = process.env.INSTAMART_PUBLIC_ORIGIN;
 const clientId = process.env.INSTAMART_CLIENT_ID;
 const key = process.env.INSTAMART_CREDENTIAL_KEY;
+const credentialKey = key && /^[a-f0-9]{64}$/i.test(key) ? Buffer.from(key, "hex") : undefined;
 const instamart = origin && auth ? {
   origin, clientId, staging: process.env.INSTAMART_STAGING === "1",
-  credentialKey: key && /^[a-f0-9]{64}$/i.test(key) ? Buffer.from(key, "hex") : undefined,
+  credentialKey,
 } : undefined;
+const zeptoClientId = process.env.ZEPTO_CLIENT_ID;
+const zepto = auth && zeptoClientId ? { origin: auth.inviteOrigin, clientId: zeptoClientId, credentialKey } : undefined;
 const port = Number(process.env.PORT ?? 3000);
 const corsOrigin = process.env.CORS_ORIGIN || "*";
-createApp({ processCall, stt, llm: openaiLlm(llmModel), corsOrigin, health: { stt: provider, llm: llmModel }, store, swiggy, instamart, auth }).listen(port, () =>
+createApp({ processCall, stt, llm: openaiLlm(llmModel), corsOrigin, health: { stt: provider, llm: llmModel }, store, swiggy, instamart, zepto, auth }).listen(port, () =>
   console.log(`voice-for-india on :${port} (stt=${provider}, llm=${llmModel}, cors=${corsOrigin})`),
 );

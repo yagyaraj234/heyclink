@@ -51,7 +51,36 @@ test("signed-in cook joins two households and can submit notes only to active me
 
   const store = await openStore();
   t.after(() => store.close({ drop: true }));
-  const server = createApp({ store, processCall, stt, llm, auth: { projectId, inviteOrigin: "https://kitchen.example" } }).listen(0, "127.0.0.1");
+  const origin = "https://kitchen.example";
+  const credentialKey = Buffer.alloc(32, 77);
+  const instamartNetwork: typeof fetch = async (input, init) => {
+    const rpc = JSON.parse(String(init?.body));
+    if (String(input) === "https://mcp.swiggy.com/im") {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer swiggy-access");
+      if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = rpc.method === "initialize" ? { protocolVersion: "2025-03-26" } : {
+        structuredContent: { success: true, data: { addresses: [{ id: "address-1", addressLine: "12 Market Street" }], pagination: { hasMore: false } } },
+      };
+      return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+    }
+    assert.equal(String(input), "https://mcp.swiggy.com/auth/token");
+    assert.equal(rpc.code, "swiggy-code");
+    return Response.json({ access_token: "swiggy-access", refresh_token: "swiggy-refresh", expires_in: 3600 });
+  };
+  const zeptoNetwork: typeof fetch = async (input, init) => {
+    assert.equal(String(input), "https://auth.zepto.co.in/token");
+    assert.equal(new Headers(init?.headers).get("content-type"), "application/x-www-form-urlencoded");
+    const body = new URLSearchParams(String(init?.body));
+    assert.equal(body.get("code"), "zepto-code");
+    assert.equal(body.get("client_id"), "zepto-client");
+    assert.equal(body.get("redirect_uri"), origin + "/zepto/callback");
+    return Response.json({ access_token: "zepto-access", refresh_token: "zepto-refresh", expires_in: 3600 });
+  };
+  const server = createApp({
+    store, processCall, stt, llm, auth: { projectId, inviteOrigin: origin },
+    instamart: { origin, credentialKey, clientId: "swiggy-client", network: instamartNetwork },
+    zepto: { origin, credentialKey, clientId: "zepto-client", network: zeptoNetwork },
+  }).listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -103,6 +132,86 @@ test("signed-in cook joins two households and can submit notes only to active me
     { id: second, name: "Rao Home", location: "Koramangala, Bengaluru", role: "cook", lang: "hi" },
     { id: first, name: "Sharma Home", location: "Indiranagar, Bengaluru", role: "cook", lang: "hi" },
   ]);
+  await t.test("only owners link grocery accounts, independently of a cart", async () => {
+    const path = (id: string, retailer: string) => `/households/${id}/grocery-accounts/${retailer}`;
+    const instamart = path(first, "instamart");
+    const zepto = path(first, "zepto");
+    const status = async (route: string, uid = "owner-a") => {
+      const res = await request(route, uid);
+      assert.equal(res.status, 200);
+      return (await res.json()).status;
+    };
+    assert.equal((await request(instamart)).status, 401);
+    assert.equal((await request(instamart, "cook", {})).status, 403);
+    assert.equal((await request(zepto, "owner-b", {})).status, 404);
+    assert.equal(await status(instamart), "available");
+    assert.equal(await status(zepto), "available");
+
+    async function begin(route: string, authorizeUrl: string, scope: string, redirect: string, code: string) {
+      const start = await request(route, "owner-a", {});
+      assert.equal(start.status, 200);
+      const open = new URL((await start.json()).url);
+      assert.equal(open.origin, origin);
+      const response = await fetch(base + open.pathname, {
+        method: "POST", body: new URLSearchParams({ ticket: open.hash.slice(1) }), redirect: "manual",
+      });
+      assert.equal(response.status, 303);
+      const authorize = new URL(response.headers.get("location")!);
+      assert.equal(authorize.origin + authorize.pathname, authorizeUrl);
+      assert.equal(authorize.searchParams.get("scope"), scope);
+      assert.equal(authorize.searchParams.get("redirect_uri"), origin + redirect);
+      assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
+      const callback = new URL(base + redirect);
+      callback.searchParams.set("state", authorize.searchParams.get("state")!);
+      callback.searchParams.set("code", code);
+      return () => fetch(callback, { headers: { cookie: response.headers.get("set-cookie")!.split(";")[0]! } });
+    }
+    const swiggyCallback = await begin(instamart, "https://mcp.swiggy.com/auth/authorize", "mcp:tools", "/instamart/callback", "swiggy-code");
+    const response = await swiggyCallback();
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Instamart connected/);
+    assert.equal((await swiggyCallback()).status, 403);
+    assert.equal(await status(instamart), "connected");
+    assert.equal(await status(path(second, "instamart"), "owner-b"), "available");
+    assert.equal(await status(zepto), "available");
+
+    const zeptoCallback = await begin(zepto, "https://auth.zepto.co.in/authorize", "tools:read", "/zepto/callback", "zepto-code");
+    assert.equal((await zeptoCallback()).status, 200);
+    assert.equal(await status(zepto), "connected");
+    const staleCallback = await begin(zepto, "https://auth.zepto.co.in/authorize", "tools:read", "/zepto/callback", "zepto-code");
+    const disconnect = (route: string, uid: string) => fetch(base + route, {
+      method: "DELETE", headers: { authorization: "Bearer " + token(uid) },
+    });
+    assert.equal((await disconnect(zepto, "cook")).status, 403);
+    assert.equal((await disconnect(zepto, "owner-a")).status, 204);
+    assert.equal((await staleCallback()).status, 409);
+    assert.equal(await status(zepto), "available");
+    assert.equal(await status(instamart), "connected");
+
+    await store.addAction({
+      householdId: first, done: false, card: {
+        id: "grocery-review", type: "cart", needsApproval: true, cart: {
+          lines: [{ item: "onion", qty: 500, unit: "g", price: 22, searchUrl: "https://www.swiggy.com/instamart" }],
+          total: 22, platform: "instamart",
+        },
+      },
+    });
+    const start = await request("/actions/grocery-review/instamart", "owner-a", {});
+    assert.equal(start.status, 200);
+    const open = new URL((await start.json()).url);
+    const review = await fetch(base + open.pathname, {
+      method: "POST", body: new URLSearchParams({ ticket: open.hash.slice(1) }), redirect: "manual",
+    });
+    assert.equal(review.status, 303);
+    assert.equal(review.headers.get("location"), "/instamart/addresses");
+    const addresses = () => fetch(base + "/instamart/addresses", {
+      headers: { cookie: review.headers.get("set-cookie")!.split(";")[0]! },
+    });
+    assert.match(await (await addresses()).text(), /12 Market Street/);
+    assert.equal((await disconnect(instamart, "owner-a")).status, 204);
+    assert.equal((await addresses()).status, 403);
+  });
+
   const note = { transcript: "paanch sau advance" };
   assert.equal((await request(`/calls?householdId=${first}`, "other-cook", note)).status, 404);
   const res = await request(`/calls?householdId=${first}`, "cook", note);
@@ -130,6 +239,23 @@ test("signed-in cook joins two households and can submit notes only to active me
   assert.equal((await request("/auth/claim", "legacy-owner", claim)).status, 200);
   assert.equal(await store.isOwner(legacy.id, "Bearer " + claim.ownerToken), false);
   assert.equal((await request(`/calls?householdId=${legacy.id}`, "legacy-owner")).status, 200);
+});
+
+test("Zepto publishes the OAuth endpoints and scope used for grocery accounts", { skip: process.env.LIVE !== "1" }, async () => {
+  const resource = await fetch("https://mcp.zepto.co.in/.well-known/oauth-protected-resource", { signal: AbortSignal.timeout(10_000) });
+  assert.equal(resource.status, 200);
+  const protectedResource = await resource.json();
+  assert.equal(protectedResource.resource, "https://mcp.zepto.co.in");
+  assert.ok(protectedResource.authorization_servers.includes("https://auth.zepto.co.in"));
+  assert.ok(protectedResource.scopes_supported.includes("tools:read"));
+
+  const authorizationServer = await fetch("https://auth.zepto.co.in/.well-known/oauth-authorization-server", { signal: AbortSignal.timeout(10_000) });
+  assert.equal(authorizationServer.status, 200);
+  const metadata = await authorizationServer.json();
+  assert.equal(metadata.authorization_endpoint, "https://auth.zepto.co.in/authorize");
+  assert.equal(metadata.token_endpoint, "https://auth.zepto.co.in/token");
+  assert.ok(metadata.code_challenge_methods_supported.includes("S256"));
+  assert.ok(metadata.token_endpoint_auth_methods_supported.includes("none"));
 });
 
 const liveProject = process.env.FIREBASE_PROJECT_ID;
