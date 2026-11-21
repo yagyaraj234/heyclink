@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command deploy of README steps 2-6 to a fresh Ubuntu 24.04 box, run from the operator's machine.
-#   OPENAI_API_KEY=... SARVAM_API_KEY=... deploy/setup.sh [user@]HOST            full setup (idempotent; rerun any time)
+#   OPENAI_API_KEY=... SARVAM_API_KEY=... DATABASE_URL=... deploy/setup.sh [user@]HOST       full setup (idempotent; rerun any time)
 #   deploy/setup.sh [user@]HOST redeploy                                          git pull, build web, restart
 # HOST is the box's IP or hostname; the user defaults to ubuntu. Caddy serves VFI_DOMAIN, else HOST, else
 # <ip-with-dashes>.sslip.io for a bare IP. Optional env: STT_PROVIDER (sarvam), OPENAI_LLM_MODEL.
@@ -20,11 +20,12 @@ if [[ $mode == setup ]]; then
   stt=${STT_PROVIDER:-sarvam}
   : "${OPENAI_API_KEY:?OPENAI_API_KEY must be set in your env (the LLM always needs it)}"
   [[ $stt != sarvam ]] || : "${SARVAM_API_KEY:?SARVAM_API_KEY must be set in your env for STT_PROVIDER=sarvam}"
+  : "${DATABASE_URL:?DATABASE_URL must be set in your env (Neon pooled connection string)}"
   envb64=$({
-    printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+    printf 'OPENAI_API_KEY=%s\nDATABASE_URL=%s\n' "$OPENAI_API_KEY" "$DATABASE_URL"
     [[ -z ${SARVAM_API_KEY:-} ]] || printf 'SARVAM_API_KEY=%s\n' "$SARVAM_API_KEY"
     printf 'STT_PROVIDER=%s\nPORT=3000\n' "$stt"
-    for key in INSTAMART_PUBLIC_ORIGIN INSTAMART_CLIENT_ID INSTAMART_STAGING EXPO_ACCESS_TOKEN; do
+    for key in PG_POOL_MAX INSTAMART_PUBLIC_ORIGIN INSTAMART_CLIENT_ID INSTAMART_STAGING EXPO_ACCESS_TOKEN; do
       [[ -z ${!key:-} ]] || printf '%s=%s\n' "$key" "${!key}"
     done
     [[ -z ${OPENAI_LLM_MODEL:-} ]] || printf 'OPENAI_LLM_MODEL=%s\n' "$OPENAI_LLM_MODEL"
