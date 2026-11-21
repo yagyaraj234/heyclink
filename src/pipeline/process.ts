@@ -7,6 +7,7 @@ import { planActions } from "../actions/plan.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
+  requested?: boolean; // optional in code only: replies recorded before the field existed lack it
   itemWord: string;
   qtyPhrase: string;
   item: string | null; // null = not in our catalog
@@ -30,9 +31,13 @@ export const EXTRACTION_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["raw", "itemWord", "qtyPhrase", "item", "qty", "unit", "brand", "confidence"],
+        required: ["raw", "requested", "itemWord", "qtyPhrase", "item", "qty", "unit", "brand", "confidence"],
         properties: {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
+          requested: {
+            type: "boolean",
+            description: "true if the cook asks for it or says it was/should be bought, brought or ordered, past tense included (le aana, chahiye, mangaya, mangwana, kharidna); false if it is only named while describing cooking steps (e.g. 'phir usmein nimbu daala')",
+          },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
           item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the item is not in the catalog" },
@@ -105,6 +110,7 @@ function resolveTail(itemWord: string): string | null {
 }
 
 function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
+  if (l.requested === false) return [];
   // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
   const branded = harness && spokenBrand(l.itemWord) !== undefined;
   const item = harness
