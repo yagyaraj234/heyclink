@@ -4,6 +4,7 @@ Generated 2026-11-21T07:41:40.918Z. Real speech only (self-recorded cook notes +
 
 > Gold: `eval/gold/indicvoices/`, labeled by an agent from the human transcripts under the integrator's rulings (`RULES` in `eval/review.ts`). **Not yet human-checked.** Unlike the earlier drafts, these labels were not produced by our own extraction, so they don't favor harness mode.
 > Transcripts quoted below: AI4Bharat IndicVoices-R (hi) and IndicVoices (te), CC BY 4.0. See `eval/gold/indicvoices/README.md`.
+> Pipeline: main at 09f30a9. 66fbd64 (candidates for bare generic words) landed after this run and is not in these numbers.
 > STT replayed from `eval/out/stt-cache` (`--cached-only`). No STT calls were made, so te-dafb1ddf × sarvam stays an error: Sarvam rejects audio over 30 s.
 
 No audio yet for 30 gold cases (30 recorded); they are not in this table.
