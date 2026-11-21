@@ -515,3 +515,25 @@ test("processCall: the cook saying she's off tomorrow adds a meal-plan card for 
   assert.equal(card.plan.date, "2026-11-22");
   assert.equal(card.plan.order.meals[0]!.dish, "Veg thali");
 });
+
+test("processCall: a failed meal plan still returns the grocery cart, without a meal-plan card", async () => {
+  const { stt } = fakeStt(cookOffText, "hi");
+  const { llm } = routedLlm(cookOffReply("2026-11-22"), new Error("503 upstream"));
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm }, { now: new Date("2026-11-21T10:00:00+05:30") });
+
+  assert.deepEqual(res.actions.map((a) => a.type), ["cart"]);
+});
+
+test("processCall: no meal-plan card when the cook doesn't say she's off, or names no real date", async () => {
+  for (const cookOff of [null, "kal"]) {
+    const { stt } = fakeStt(cookOffText, "hi");
+    const { llm, calls } = routedLlm(cookOffReply(cookOff), mealReply);
+
+    const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+    assert.deepEqual(res.actions.map((a) => a.type), ["cart"]);
+    assert.equal(res.extraction.cookOff, undefined);
+    assert.equal(calls.length, 1); // no meal-plan call
+  }
+});
