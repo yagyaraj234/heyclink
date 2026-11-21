@@ -36,6 +36,11 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   // done = approved (cart/advance) or answered (question). lines = what the cart is built from; line = the question's line.
   type Entry = { card: ActionCard; callId: string; householdId: string; done: boolean; lines?: GroceryLine[]; line?: GroceryLine };
   const actions = new Map<string, Entry>();
+  // CallResult (frozen) has no done flag, so responses add one status per action id.
+  const withStatus = (call: CallResult) => ({
+    ...call,
+    status: Object.fromEntries(call.actions.map((a) => [a.id, !actions.get(a.id)?.done ? "pending" : a.type === "question" ? "answered" : "approved"])),
+  });
 
   const app = express();
   app.use((req, res, next) => {
@@ -90,20 +95,20 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       if (card.type === "question") entry.line = unsure[q++];
       actions.set(card.id, entry);
     }
-    res.status(201).json(result);
+    res.status(201).json(withStatus(result));
   });
 
   app.get("/calls", (req, res) => {
     const householdId = String(req.query.householdId ?? "");
     if (!households.has(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
     // ponytail: O(all calls) scan; fine for an in-memory demo.
-    res.json([...calls.values()].filter((c) => callHousehold.get(c.callId) === householdId).reverse());
+    res.json([...calls.values()].filter((c) => callHousehold.get(c.callId) === householdId).reverse().map(withStatus));
   });
 
   app.get("/calls/:id", (req, res) => {
     const call = calls.get(req.params.id);
     if (!call) return void res.status(404).json({ error: "unknown call" });
-    res.json(call);
+    res.json(withStatus(call));
   });
 
   app.post("/actions/:id/approve", (req, res) => {
