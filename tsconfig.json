@@ -15,5 +15,5 @@
     "types": ["node"]
   },
   "include": ["src", "eval", "fixtures", "scripts"],
-  "exclude": ["node_modules", "web", "mobile"]
+  "exclude": ["node_modules", "web", "mobile", "eval/data"]
 }
