@@ -51,7 +51,12 @@ async function review() {
     return ((await lines.next()).value ?? "q").trim().toLowerCase(); // EOF → quit
   };
   const todo = readdirSync(DRAFTS).filter((f) => f.endsWith(".json") && !existsSync(`${GOLD}/${f}`)).sort();
-  console.log(`${todo.length} to review. y = accept, e = edit in $EDITOR, s = skip, q = quit\n`);
+  console.log(`${todo.length} to review. y = accept, e = edit in $EDITOR, s = skip, q = quit
+Rules (match fixtures/cases):
+  - A price/availability question or a narrative mention with a quantity still produces a line.
+  - Drop lines whose item has no id in fixtures/items.json. Never force a near id.
+  - Keep a brand only if the speaker said it. Drafts see household brands, so delete leaked "amul" etc.
+  - No grocery intent at all → s (skip), so the clip stays out of the eval.\n`);
   for (const [i, f] of todo.entries()) {
     const path = `${DRAFTS}/${f}`;
     for (;;) {
