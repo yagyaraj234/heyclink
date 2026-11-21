@@ -55,7 +55,7 @@ function householdBrief(h: Household): string {
   ].filter(Boolean).join("\n");
 }
 
-function weekday(date: string): Weekday {
+export function weekday(date: string): Weekday {
   return WEEKDAYS[new Date(`${date}T00:00:00Z`).getUTCDay()]!; // UTC: the date is a calendar day, not an instant
 }
 

@@ -514,6 +514,9 @@ test("processCall: the cook saying she's off tomorrow adds a meal-plan card for 
   assert.deepEqual(card.options, ["cook", "order"]);
   assert.equal(card.plan.date, "2026-11-22");
   assert.equal(card.plan.order.meals[0]!.dish, "Veg thali");
+  // she is off that day even though it isn't one of her usual off days
+  assert.equal(card.plan.suggested, "order");
+  assert.equal(card.plan.reason, "Lakshmi is off on Sunday");
 });
 
 test("processCall: a failed meal plan still returns the grocery cart, without a meal-plan card", async () => {
