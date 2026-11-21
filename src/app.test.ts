@@ -86,3 +86,64 @@ test("unknown household, empty input and unknown action are client errors", asyn
   assert.equal((await fetch(`${base}/calls/nope`)).status, 404);
   assert.equal((await fetch(`${base}/households/nope`)).status, 404);
 });
+
+test("answering a question 'yes' adds the line to the call's cart and recomputes total", async (t) => {
+  const unsureLlm: Llm = {
+    json: async <T>() =>
+      ({
+        groceries: [
+          { raw: "do gaddi dhaniya", item: "coriander", qty: 2, unit: "bunch", confidence: 1 },
+          { raw: "thoda methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.59 },
+          { raw: "woh wala tel", item: "sunflower-oil", qty: 1, unit: "l", confidence: 0.3 },
+        ],
+        notes: [],
+      }) as T,
+  };
+  const server = createApp({ processCall, stt: fakeStt(), llm: unsureLlm }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown) =>
+    fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  const call = (await (await post("/calls", { transcript: "x", householdId: "h1" })).json()) as CallResult;
+  const [, methiQ, oilQ] = call.actions;
+  assert.deepEqual(call.actions.map((a) => a.type), ["cart", "question", "question"]);
+
+  const yes = await post(`/actions/${methiQ!.id}/answer`, { option: "Yes, add it" });
+  assert.equal(yes.status, 200);
+  const no = await post(`/actions/${oilQ!.id}/answer`, { option: "No, skip" });
+  assert.deepEqual(await no.json(), { status: "answered" });
+  assert.equal((await post(`/actions/${methiQ!.id}/answer`, { option: "No, skip" })).status, 409);
+  assert.equal((await post(`/actions/${call.actions[0]!.id}/answer`, { option: "Yes, add it" })).status, 400);
+
+  const after = (await (await fetch(`${base}/calls/${call.callId}`)).json()) as CallResult;
+  const cart = after.actions[0]!;
+  // coriander 2 × 15 = 30; methi 1 × 18 = 18
+  assert.ok(cart.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => l.item), ["coriander", "methi"]);
+  assert.equal(cart.cart.total, 48);
+});
+
+test("answering 'yes' when every line was unsure creates an approvable cart card", async (t) => {
+  const llm: Llm = {
+    json: async <T>() => ({ groceries: [{ raw: "woh atta", item: "atta", qty: 2, unit: "kg", confidence: 0.4 }], notes: [] }) as T,
+  };
+  const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown) =>
+    fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  const call = (await (await post("/calls", { transcript: "x", householdId: "h1" })).json()) as CallResult;
+  assert.deepEqual(call.actions.map((a) => a.type), ["question"]);
+  const res = (await (await post(`/actions/${call.actions[0]!.id}/answer`, { option: "Yes, add it" })).json()) as {
+    cart: { id: string; cart: { total: number } };
+  };
+  // atta 2 kg, household brand aashirvaad @66 = 132
+  assert.equal(res.cart.cart.total, 132);
+  assert.deepEqual(await (await post(`/actions/${res.cart.id}/approve`, {})).json(), { status: "approved" });
+  const after = (await (await fetch(`${base}/calls/${call.callId}`)).json()) as CallResult;
+  assert.deepEqual(after.actions.map((a) => a.type), ["cart", "question"]);
+});

@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { ActionCard, Extraction, Household } from "../contracts.ts";
+import type { ActionCard, Extraction, GroceryLine, Household } from "../contracts.ts";
 import { buildCart, catalog } from "./cart.ts";
 
 const MIN_CONFIDENCE = 0.6;
+export const isUnsure = (l: GroceryLine) => l.confidence < MIN_CONFIDENCE;
+
+export type CartCard = Extract<ActionCard, { type: "cart" }>;
+
+export async function cartCard(lines: GroceryLine[], household: Household): Promise<CartCard> {
+  const cart = await buildCart(lines, household);
+  return { id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit };
+}
 
 export function upiUrl(upiId: string, name: string, amount: number, note: string): string {
   // pa stays raw: UPI apps expect a literal "@" in the VPA.
@@ -12,12 +20,9 @@ export function upiUrl(upiId: string, name: string, amount: number, note: string
 /** Async because the cart comes from buildCart (a future Instamart backend is network-bound). */
 export async function planActions(extraction: Extraction, household: Household): Promise<ActionCard[]> {
   const cards: ActionCard[] = [];
-  const sure = extraction.groceries.filter((l) => l.confidence >= MIN_CONFIDENCE);
-  const unsure = extraction.groceries.filter((l) => l.confidence < MIN_CONFIDENCE);
-  if (sure.length) {
-    const cart = await buildCart(sure, household);
-    cards.push({ id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit });
-  }
+  const sure = extraction.groceries.filter((l) => !isUnsure(l));
+  const unsure = extraction.groceries.filter(isUnsure);
+  if (sure.length) cards.push(await cartCard(sure, household));
   if (extraction.advance) {
     const { name, upiId } = household.cook;
     cards.push({
