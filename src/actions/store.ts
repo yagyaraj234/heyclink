@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
 import type { ActionCard, CallResult, GroceryLine, Household } from "../contracts.ts";
@@ -20,6 +21,7 @@ export function openStore(path = ":memory:") {
   const db = new DatabaseSync(path);
   db.exec(`
     CREATE TABLE IF NOT EXISTS households (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS owner_keys (household TEXT PRIMARY KEY, hash TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, household TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, household TEXT NOT NULL, call TEXT, pos INTEGER NOT NULL, data TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS calls_household ON calls(household);
@@ -42,8 +44,22 @@ export function openStore(path = ":memory:") {
     household: (id: string) => one<Household>("SELECT data FROM households WHERE id = ?", id),
     householdByCode: (code: string) => one<Household>("SELECT data FROM households WHERE code = ?", code),
     /** false when the code is already taken; the caller picks another. */
-    addHousehold(h: Household, code: string): boolean {
-      return db.prepare("INSERT INTO households VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(h.id, code, JSON.stringify(h)).changes === 1;
+    addHousehold(h: Household, code: string, token?: string): boolean {
+      db.exec("BEGIN");
+      try {
+        const added = db.prepare("INSERT INTO households VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(h.id, code, JSON.stringify(h)).changes === 1;
+        if (added && token) db.prepare("INSERT INTO owner_keys VALUES (?, ?)").run(h.id, createHash("sha256").update(token).digest("hex"));
+        db.exec("COMMIT");
+        return added;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    isOwner(id: string, authorization: string | undefined): boolean {
+      const token = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization ?? "")?.[1];
+      return !!token && !!db.prepare("SELECT 1 FROM owner_keys WHERE household = ? AND hash = ?")
+        .get(id, createHash("sha256").update(token).digest("hex"));
     },
     saveHousehold: (h: Household) => void db.prepare("UPDATE households SET data = ? WHERE id = ?").run(JSON.stringify(h), h.id),
 
