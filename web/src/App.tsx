@@ -257,6 +257,7 @@ function Card({ card, limit, status, onApprove, onAnswer }: {
       </div>
     );
   }
+  if (card.type !== "question") return null; // order and meal-plan cards render in mobile/
   return (
     <div className="card">
       <h3>❓ {card.text}</h3>

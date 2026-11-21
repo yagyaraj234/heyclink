@@ -93,20 +93,71 @@ export interface Cart {
 export type ActionCard =
   | { id: string; type: "cart"; cart: Cart; needsApproval: boolean }
   | { id: string; type: "advance"; advance: AdvanceRequest; payee: string; upiUrl?: string; needsApproval: true }
-  | { id: string; type: "question"; text: string; options: string[] };
+  | { id: string; type: "question"; text: string; options: string[] }
+  | { id: string; type: "order"; order: Order; needsApproval: true }
+  | { id: string; type: "meal-plan"; plan: MealPlan; options: MealChoice[] };
+
+// ---- Kitchen: orders and meal plans -----------------------------------------
+
+export const ORDER_STATUSES = ["scheduled", "placed", "failed", "cancelled"] as const;
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+/** An Instamart order. cart.platform "instamart" = placed through Swiggy; "mock" = labelled demo order. Payment is COD only. */
+export interface Order {
+  cart: Cart;
+  status: OrderStatus;
+  scheduledFor?: string; // ISO time the scheduler places it; absent = place on approve
+  orderId?: string; // Swiggy order id once placed
+}
+
+export const MEAL_SLOTS = ["breakfast", "lunch", "dinner", "snack"] as const;
+export type MealSlot = (typeof MEAL_SLOTS)[number];
+
+export const MEAL_CHOICES = ["cook", "order"] as const;
+export type MealChoice = (typeof MEAL_CHOICES)[number];
+
+/** LLM estimates per serving; the UI always shows them with "≈". */
+export interface Macros { kcal: number; proteinG: number; carbsG: number; fiberG: number; fatG: number }
+
+export interface Meal {
+  slot: MealSlot;
+  dish: string;
+  macros: Macros;
+  steps?: string[]; // cook option: short recipe
+  searchUrl?: string; // order option: Swiggy search for the dish
+}
+
+/** Tomorrow's plan, e.g. when the cook is off. Both options are filled; `suggested` comes from habits. */
+export interface MealPlan {
+  date: string; // YYYY-MM-DD the plan is for
+  reason: string; // e.g. "Lakshmi is off on Sunday"
+  suggested: MealChoice;
+  cook: { meals: Meal[]; cart: Cart }; // cart = ingredients not already in the pantry
+  order: { meals: Meal[] };
+}
 
 // ---- Household context ------------------------------------------------------
 
 export interface Household {
   id: string;
-  cook: { name: string; lang: Lang; monthlySalary: number; upiId: string };
+  cook: { name: string; lang: Lang; monthlySalary: number; upiId: string; phone?: string; offDays?: Weekday[] };
+  owner?: { name: string; phone: string };
+  goals?: { goal: Goal; diet: Diet; proteinG?: number }; // from signup; feeds meal plans
   family: { headcount: number; dietRules: string[] };
   brands: Record<string, string>; // item -> preferred brand
   pantry: Record<string, { qty: number; unit: Unit }>;
   platform: Platform;
   approvalLimit: number; // INR; carts above this need approval
   history: { at: string; lines: Pick<GroceryLine, "item" | "qty" | "unit" | "brand">[] }[];
+  habits?: Partial<Record<Weekday, Record<MealChoice, number>>>; // meal-plan choices per weekday, e.g. { sun: { cook: 1, order: 3 } }
 }
+
+export const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+export const GOALS = ["lose", "maintain", "gain"] as const;
+export type Goal = (typeof GOALS)[number];
+export const DIETS = ["veg", "egg", "non-veg"] as const;
+export type Diet = (typeof DIETS)[number];
 
 // ---- Ports (external adapters; the ONLY place tests may use fakes) ----------
 
