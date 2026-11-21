@@ -194,3 +194,19 @@ test("POST /calls names the temp audio file by Content-Type so adapters can pick
     assert.match(seen.path ?? "", new RegExp(`/vfi-[0-9a-f-]+\\.${ext}$`), contentType);
   }
 });
+
+test("GET /calls?householdId lists that household's calls, newest first", async (t) => {
+  const { base, post, close } = await serve();
+  t.after(close);
+  const first = (await (await post("/calls", { transcript: "do kilo atta", householdId: "h1" })).json()) as CallResult;
+  const second = (await (await post("/calls", { transcript: "ek packet doodh", householdId: "h1" })).json()) as CallResult;
+
+  const res = await fetch(`${base}/calls?householdId=h1`);
+  assert.equal(res.status, 200);
+  const list = (await res.json()) as CallResult[];
+  assert.deepEqual(list.map((c) => c.callId), [second.callId, first.callId]);
+  assert.equal(list[0]!.transcript.text, "ek packet doodh");
+
+  assert.equal((await fetch(`${base}/calls?householdId=nope`)).status, 404);
+  assert.equal((await fetch(`${base}/calls`)).status, 404);
+});
