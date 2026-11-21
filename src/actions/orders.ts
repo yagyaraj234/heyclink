@@ -26,7 +26,7 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
   return card.order;
 }
 
-/** Places every confirmed order whose scheduledFor has passed. server.ts runs it every 60 s. */
+/** Places confirmed orders due now. server.ts runs it every 60 s. */
 export async function runDue(now: Date, store: Store, swiggy: Swiggy, push?: Push): Promise<Order[]> {
   const [orders] = await Promise.all([
     Promise.all(store.dueOrders(now.toISOString()).map((e) => placeOrder(e, store, swiggy))),

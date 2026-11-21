@@ -50,7 +50,7 @@ export function historyLines(receipt: GroceryReceipt): Household["history"][numb
 }
 
 /** Households, calls and actions as JSON rows in node:sqlite. ":memory:" for tests. */
-export function openStore(path = ":memory:") {
+export function openStore(path = ":memory:", { recoverInterruptedOrders = false } = {}) {
   const db = new DatabaseSync(path);
   db.exec(`
     CREATE TABLE IF NOT EXISTS households (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
@@ -68,6 +68,14 @@ export function openStore(path = ":memory:") {
     CREATE INDEX IF NOT EXISTS actions_call ON actions(call, pos);
   `);
 
+  if (recoverInterruptedOrders) {
+    // The checkout runner has restarted. The previous attempt may have reached the provider.
+    db.exec(`UPDATE actions
+      SET data=json_remove(json_set(data,'$.card.order.status','failed'),'$.placing')
+      WHERE data->>'$.card.type'='order' AND data->>'$.card.order.status'='scheduled'
+        AND data->>'$.done' AND data->>'$.placing'`);
+  }
+
   // Older claims deliberately have no proof. Never infer their retailer contents from a local draft.
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -75,6 +83,7 @@ export function openStore(path = ":memory:") {
     if (!fields.some(f => f.name === "intent")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN intent TEXT");
     if (!fields.some(f => f.name === "receipt")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN receipt TEXT");
     if (!fields.some(f => f.name === "readToken")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN readToken TEXT");
+    if (!fields.some(f => f.name === "reviewRevision")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN reviewRevision TEXT");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -124,27 +133,28 @@ export function openStore(path = ":memory:") {
         .run(cart, revision, intent ? JSON.stringify(intent) : null).changes === 1,
     instamartIntent: (cart: string) => one<InstamartIntent>("SELECT intent AS data FROM instamart_prepared WHERE cart=? AND intent IS NOT NULL", cart),
     saveInstamartIntent(cart: string, intent: InstamartIntent) {
-      db.prepare("UPDATE instamart_prepared SET intent=?, receipt=NULL, readToken=NULL WHERE cart=?").run(JSON.stringify(intent), cart);
+      db.prepare("UPDATE instamart_prepared SET intent=?, receipt=NULL, readToken=NULL, reviewRevision=NULL WHERE cart=?").run(JSON.stringify(intent), cart);
     },
+    // A review binds the receipt to the current list while the claim still identifies the packs already sent.
     instamartReceipt: (cart: string, revision: string) =>
-      one<GroceryReceipt>("SELECT receipt AS data FROM instamart_prepared WHERE cart=? AND revision=? AND receipt IS NOT NULL", cart, revision),
+      one<GroceryReceipt>("SELECT receipt AS data FROM instamart_prepared WHERE cart=? AND COALESCE(reviewRevision, revision)=? AND receipt IS NOT NULL", cart, revision),
     beginInstamartReview(cart: string, revision: string) {
       const token = randomUUID();
       const entry = store.action(cart);
       if (!entry || entry.done || entry.card.type !== "cart" || cartRevision(entry.card.cart) !== revision ||
-          !db.prepare("UPDATE instamart_prepared SET receipt=NULL, readToken=? WHERE cart=? AND revision=?")
-            .run(token, cart, revision).changes) throw Object.assign(new Error("Cart changed. Reopen the current review."), {status: 409});
+          !db.prepare("UPDATE instamart_prepared SET receipt=NULL, readToken=?, reviewRevision=? WHERE cart=?")
+            .run(token, revision, cart).changes) throw Object.assign(new Error("Cart changed. Reopen the current review."), {status: 409});
       return token;
     },
     isInstamartReviewCurrent: (cart: string, revision: string, token: string) =>
-      !!db.prepare("SELECT 1 FROM instamart_prepared WHERE cart=? AND revision=? AND readToken=?").get(cart, revision, token),
+      !!db.prepare("SELECT 1 FROM instamart_prepared WHERE cart=? AND reviewRevision=? AND readToken=?").get(cart, revision, token),
     saveInstamartReceipt(cart: string, revision: string, receipt: Omit<GroceryReceipt, "receiptId">, token?: string) {
       const entry = store.action(cart);
       if (!entry || entry.done || entry.card.type !== "cart" || cartRevision(entry.card.cart) !== revision ||
           !receipt.lines.length || receipt.source !== "instamart") throw Object.assign(new Error("Cart changed. Review in Instamart again."), {status: 409});
       const encoded = JSON.stringify(receipt);
       const receiptId = createHash("sha256").update(revision).update(encoded).digest("hex");
-      const saved = db.prepare("UPDATE instamart_prepared SET receipt=? WHERE cart=? AND revision=? AND readToken IS ?")
+      const saved = db.prepare("UPDATE instamart_prepared SET receipt=? WHERE cart=? AND COALESCE(reviewRevision, revision)=? AND readToken IS ?")
         .run(JSON.stringify({...receipt,receiptId}), cart, revision, token ?? null);
       if (!saved.changes) throw Object.assign(new Error("Instamart claim changed."), {status: 409});
     },
@@ -207,10 +217,11 @@ export function openStore(path = ":memory:") {
         .run(e.card.id, e.householdId, e.callId ?? null, JSON.stringify({ ...e, at: new Date().toISOString() }), e.callId ?? null);
       if (e.card.type === "cart" && e.callId && e.card.cart.lines.length) alerts.queue(e.householdId, e.card.id, "ready", Date.now());
     },
-    /** Confirmed (approved) scheduled orders due by `now` (ISO, UTC) and not already being placed. */
+    /** Confirmed orders that can start now, including immediate orders interrupted before claiming. */
     dueOrders: (now: string) =>
       (db.prepare(`SELECT data FROM actions WHERE data ->> '$.card.type' = 'order' AND data ->> '$.card.order.status' = 'scheduled'
-        AND data ->> '$.done' AND NOT IFNULL(data ->> '$.placing', 0) AND data ->> '$.card.order.scheduledFor' <= ?`).all(now) as Row[])
+        AND data ->> '$.done' AND NOT IFNULL(data ->> '$.placing', 0)
+        AND (data ->> '$.card.order.scheduledFor' IS NULL OR data ->> '$.card.order.scheduledFor' <= ?)`).all(now) as Row[])
         .map((r) => JSON.parse(r.data) as Entry),
     /** Cards with no call (meal plans, the carts they make), newest first. */
     looseActions: (householdId: string) =>

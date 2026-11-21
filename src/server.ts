@@ -23,7 +23,8 @@ const llmModel = process.env.OPENAI_LLM_MODEL || "gpt-6-luna"; // passed explici
 
 const dataDir = process.env.DATA_DIR || ".data";
 mkdirSync(dataDir, { recursive: true });
-const store = openStore(join(dataDir, "vfi.db"));
+// Only the server runs checkout against this database.
+const store = openStore(join(dataDir, "vfi.db"), { recoverInterruptedOrders: true });
 const swiggy = mockSwiggy; // ponytail: mock orders until the Instamart spike is go
 setInterval(() => void runDue(new Date(), store, swiggy, expoPush).catch(console.error), 60_000);
 

@@ -1335,7 +1335,16 @@ async function retailerScenario(t: import("node:test").TestContext, result: "tim
   const call = (await (
     await post("/calls", { householdId: owner.id, transcript: "750 g onion and 500 g tomato" })
   ).json()) as CallResult;
-  const card = call.actions.find((a) => a.type === "cart")!;
+  let card = call.actions.find((a) => a.type === "cart")!;
+  const revise = async (qty: number) => {
+    const response = await fetch(base + "/actions/" + card.id + "/review", {
+      method: "POST",
+      headers: { authorization: "Bearer " + owner.ownerToken, "content-type": "application/json" },
+      body: JSON.stringify({ reviewId: (card.cart as { reviewId?: string }).reviewId, edits: [{ index: 0, qty, unit: "g" }] }),
+    });
+    assert.equal(response.status, 200);
+    card = (await response.json()).cart;
+  };
   const form = (path: string, data: Record<string, string>, cookie = "") =>
     fetch(base + path, { method: "POST", redirect: "manual", headers: { cookie }, body: new URLSearchParams(data) });
   const open = async () => {
@@ -1387,6 +1396,7 @@ async function retailerScenario(t: import("node:test").TestContext, result: "tim
   return {
     prepare,
     reopen,
+    revise,
     writes: () => writes,
     stock,
     product,
@@ -1490,6 +1500,32 @@ test("changed retailer bill invalidates the old owner receipt and fences overlap
   assert.equal((await flow.reopen()).status, 409);
   assert.equal(await flow.receipt(), undefined);
   assert.equal((await flow.order(latest.receiptId)).status, 409);
+  assert.equal(flow.writes(), 1);
+});
+
+test("edited household lists can review the existing Instamart basket without adding packs again", async (t) => {
+  const flow = await retailerScenario(t, "adjusted");
+  assert.equal(flow.prepare.status, 200);
+  const first = await flow.reopen();
+  assert.equal((await first.proceed()).status, 303);
+  const original = await flow.receipt();
+
+  await flow.revise(1000);
+  assert.equal(await flow.receipt(), undefined);
+  assert.equal((await flow.order(original.receiptId)).status, 409);
+  assert.equal((await first.proceed()).status, 409);
+
+  const revised = await flow.reopen();
+  assert.equal(revised.status, 200);
+  assert.match(revised.html, /Updated household list/);
+  assert.match(revised.html, /onion · 1000 g/);
+  assert.match(revised.html, /Continue with existing basket/);
+  assert.equal(await flow.receipt(), undefined);
+  assert.equal((await revised.proceed()).status, 303);
+  const receipt = await flow.receipt();
+  assert.notEqual(receipt.receiptId, original.receiptId);
+  assert.equal((await flow.order(receipt.receiptId)).status, 200);
+  assert.deepEqual((await flow.history()).map((h) => h.lines), [[{ item: "onion", qty: 400, unit: "g" }]]);
   assert.equal(flow.writes(), 1);
 });
 
