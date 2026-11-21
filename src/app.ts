@@ -78,10 +78,8 @@ function parseSignup(body: unknown): Signup | string {
 
 export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
-  const withStatus = ({ call, entries }: StoredCall) => ({
-    ...call,
-    status: Object.fromEntries(entries.map((e) => [e.card.id, !e.done ? "pending" : e.card.type === "question" ? "answered" : "approved"])),
-  });
+  const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
+  const withStatus = ({ call, entries }: StoredCall) => ({ ...call, status: Object.fromEntries(entries.map((e) => [e.card.id, statusOf(e)])) });
 
   const app = express();
   app.use((req, res, next) => {
@@ -163,6 +161,11 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       store.addAction(entry);
     }
     res.status(201).json(withStatus(store.call(callId)!));
+  });
+
+  app.get("/households/:id/actions", (req, res) => {
+    if (!store.household(req.params.id)) return void res.status(404).json({ error: "unknown household" });
+    res.json(store.looseActions(req.params.id).map((e) => ({ card: e.card, status: statusOf(e), at: e.at })));
   });
 
   app.get("/calls", (req, res) => {
