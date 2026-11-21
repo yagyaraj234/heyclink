@@ -81,8 +81,8 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
   if (!url) {
     url = process.env.TEST_DATABASE_URL;
     if (!url) throw new Error("Set TEST_DATABASE_URL to a Postgres you can create schemas in (see README)");
-    // ponytail: test schemas are never dropped; recreate the test container to clean up.
-    schema ??= "t_" + randomUUID().replaceAll("-", "");
+    // The creation time lets drop-old-schemas.ts drop schemas from old runs.
+    schema ??= `t_${Date.now()}_${randomUUID().slice(0, 8)}`;
     const admin = new pg.Client({ connectionString: url });
     await admin.connect();
     try { await admin.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`); } finally { await admin.end(); }
