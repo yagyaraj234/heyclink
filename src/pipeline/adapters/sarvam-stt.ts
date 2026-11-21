@@ -1,4 +1,4 @@
-import { openAsBlob } from "node:fs";
+import { audioBlob } from "./audio.ts";
 import { basename } from "node:path";
 import type { Stt } from "../../contracts.ts";
 import { toLang } from "./lang.ts";
@@ -10,7 +10,7 @@ export function sarvamStt(model = "saaras:v4"): Stt {
       const key = process.env.SARVAM_API_KEY;
       if (!key) throw new Error("SARVAM_API_KEY not set");
       const form = new FormData();
-      form.append("file", await openAsBlob(audioPath, { type: "audio/wav" }), basename(audioPath));
+      form.append("file", await audioBlob(audioPath), basename(audioPath));
       form.append("model", model);
       form.append("mode", "transcribe");
       form.append("language_code", lang ? `${lang}-IN` : "unknown");
