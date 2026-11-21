@@ -1,11 +1,11 @@
 import type { Unit } from "../contracts.ts";
 
 const unitAliases: Record<Unit, string> = {
-  kg: "kg kilo kilogram kilos kilograms किलो किलोग्राम కిలో",
-  g: "g gram grams gm ग्राम",
+  kg: "kg kilo kilogram kilos kilograms किलो किलोग्राम కిలో కేజీల",
+  g: "g gram grams gm ग्राम గ్రాముల",
   l: "l litre liter litres liters लीटर लिटर",
   ml: "ml milliliter millilitre मिलीलीटर एमएल",
-  packet: "packet pack packets packs पैकेट",
+  packet: "packet pack packets packs पैकेट ప్యాకెట్ల ప్యాకెట్లు సంచులో",
   piece: "piece pieces pc pcs nag नग पीस",
   dozen: "dozen darjan दर्जन",
   bunch: "bunch bunches gaddi गड्डी गड्डियां गड्डियाँ",
@@ -17,8 +17,8 @@ for (const unit of Object.keys(unitAliases) as Unit[]) {
 }
 
 const numberWords = [
-  "ek एक", "do दो", "teen tin तीन", "char chaar चार", "panch paanch पांच पाँच",
-  "chhe che chhah छह छः", "sat saat सात", "aath ath आठ", "nau नौ", "das dus दस",
+  "ek एक", "do दो రెండు", "teen tin तीन మూడు", "char chaar चार", "panch paanch पांच पाँच ఐదు",
+  "chhe che chhah छह छः", "sat saat सात ఏడు", "aath ath आठ", "nau नौ", "das dus दस పది",
   "gyarah gyaarah ग्यारह", "barah baarah बारह", "terah तेरह", "chaudah चौदह",
   "pandrah पंद्रह पन्द्रह", "solah सोलह", "satrah सत्रह", "atharah अठारह",
   "unnees unnis उन्नीस", "bees bis बीस",
@@ -53,8 +53,8 @@ for (const [index, words] of numberWords.entries()) {
 }
 
 const scales = [
-  [1000, /^(?:(.+?) )?(?:hazaar|hazar|हज़ार|हजार)(?: (.+))?$/u],
-  [100, /^(?:(.+?) )?(?:sau|सौ)(?: (.+))?$/u],
+  [1000, /^(?:(.+?) )?(?:hazaar|hazar|हज़ार|हजार|వెయ్యి)(?: (.+))?$/u],
+  [100, /^(?:(.+?) )?(?:sau|सौ|వంద|వందల|వందలు)(?: (.+))?$/u],
 ] as const;
 
 const fractions = new Map([
@@ -109,8 +109,10 @@ function parseQuantity(raw: string, maxScale = Infinity): number {
 
 export function normalizeQuantity(raw: string): { qty: number; unit: Unit } | null {
   const text = raw.normalize().trim().toLowerCase().replace(/\s+/gu, " ")
+    .replace(/[\u200c\u200d]/gu, "")
     .replace(/[०-९]/gu, (digit) => String(digit.charCodeAt(0) - 0x0966))
     .replace(/[౦-౯]/gu, (digit) => String(digit.charCodeAt(0) - 0x0c66))
+    .replace(/ చిన్న సంచులో$/u, " సంచులో")
     .replace(/^(అర|పావు)కిలో$/u, "$1 కిలో");
   const match = /^(.+?)(?: |(?<=\d))([\p{L}\p{M}]+)$/u.exec(text);
   if (!match?.[1] || !match[2]) return null;

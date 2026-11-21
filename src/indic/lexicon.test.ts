@@ -138,6 +138,22 @@ const cases: [string, string | null][] = [
   ["patta gobhi", "cabbage"],
   ["Vim", null],
   ["Surf Excel liquid", null],
+  // Clean item spans from the Telugu Bigbasket clips.
+  ["టీ", "tea"],
+  ["గ్రీన్ టీ", "tea"],
+  ["ఓట్స్", "oats"],
+  ["ఓట్స్ పౌడర్", "oats"],
+  ["ఇంస్టంట్ ఓట్స్ పౌడర్", "oats"],
+  ["పాస్తా", "pasta"],
+  ["పాస్తా ట్రీట్", "pasta"],
+  ["ఇన్\u200dస్టాన్ట్ పాస్తా ట్రీట్", "pasta"],
+  ["బిస్కెట్లు", "biscuits"],
+  ["మారీ క్లాసిక్ బిస్కెట్లు", "biscuits"],
+  ["కోకోనట్ క్యాండి", null],
+  ["గులాబ్ జామూను", null],
+  ["దోమలు తరిమే క్రీం", null],
+  ["నూడిల్స్", null],
+  ["పాప్ కార్న్‌ని", null],
 ];
 
 for (const [raw, expected] of cases) {

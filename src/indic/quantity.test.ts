@@ -87,6 +87,18 @@ const cases: [string, number, Unit][] = [
   // Clean qtyPhrase from the Telugu IndicVoices Bigbasket fixture.
   ["సున్నాపాయింట్ ఐదు కిలో", 0.5, "kg"],
   ["సున్నా పాయింట్ ఐదు కిలో", 0.5, "kg"],
+  // Quantity forms from the Telugu Bigbasket clips.
+  ["రెండు కిలో", 2, "kg"],
+  ["ఐదు కేజీల", 5, "kg"],
+  ["వంద గ్రాముల", 100, "g"],
+  ["ఐదు వందలు గ్రాముల", 500, "g"],
+  ["వెయ్యి గ్రాముల", 1000, "g"],
+  ["ఏడు వందల గ్రాముల", 700, "g"],
+  ["ఐదు ప్యాకెట్ల", 5, "packet"],
+  ["ఐదు ప్యాకెట్లు", 5, "packet"],
+  ["పది ప్యాకెట్లు", 10, "packet"],
+  ["రెండు ప్యాకెట్\u200cలు", 2, "packet"],
+  ["మూడు చిన్న సంచులో", 3, "packet"],
 ];
 
 for (const [raw, qty, unit] of cases) {
@@ -95,7 +107,11 @@ for (const [raw, qty, unit] of cases) {
   });
 }
 
-for (const raw of ["", "kilo", "dedh", "0 kg", "-2 kg", "1e3 g", "two bags", "do kilo pyaaz", "saade kilo", "do sau teen sau gram", "sava aadha kilo", "do sau paune 0 gram"]) {
+for (const raw of [
+  "", "kilo", "dedh", "0 kg", "-2 kg", "1e3 g", "two bags", "do kilo pyaaz",
+  "saade kilo", "do sau teen sau gram", "sava aadha kilo", "do sau paune 0 gram",
+  "రెండు అట్టపెట్టెలు", "ఏడు వందల రూపాయల",
+]) {
   test(`normalizeQuantity rejects ${JSON.stringify(raw)}`, () => {
     assert.equal(normalizeQuantity(raw), null);
   });
