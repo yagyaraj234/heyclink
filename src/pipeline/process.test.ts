@@ -459,3 +459,13 @@ test("processCall: 'woh daal' resolves from a recent call's line, and recent not
   assert.match(calls[0]!.user, /aadha kilo moong daal le aana/);
   assert.match(calls[0]!.system, /recentNotes/);
 });
+
+test("processCall: a single candidate not in history becomes the line at confidence ≤ 0.5, not a one-option card", async () => {
+  const { stt } = fakeStt("do kilo चना le aana", "hi");
+  const { llm } = fakeLlm(chanaReply(["kala-chana"]));
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit, g.confidence]), [["kala-chana", 2, "kg", 0.5]]);
+  assert.equal(res.extraction.ambiguous, undefined);
+});

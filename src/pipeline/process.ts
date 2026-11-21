@@ -127,10 +127,16 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine |
     ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord) ?? resolveTail(l.raw))
     : l.item;
   const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
+  let guess = false;
   if (!item || !(ITEMS as string[]).includes(item)) {
     // ambiguous word ("चना"): the one candidate this household already buys settles it, otherwise ask
     const candidates = [...new Set(l.candidates ?? [])].filter((c) => (ITEMS as string[]).includes(c));
     const seen = candidates.filter((c) => known.has(c));
+    if (seen.length !== 1 && candidates.length === 1) {
+      // one option: take it, but low confidence makes planActions ask "did they mean…?"
+      seen.push(candidates[0]!);
+      guess = true;
+    }
     if (seen.length !== 1) {
       if (!candidates.length) return; // unknown product: dropped
       const qty = q?.qty ?? l.qty;
@@ -146,7 +152,7 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine |
     item,
     qty: q?.qty ?? l.qty,
     unit: q?.unit ?? l.unit,
-    confidence: l.confidence,
+    confidence: guess ? Math.min(l.confidence, 0.5) : l.confidence,
   };
   if (!(line.qty > 0)) {
     // vague amount ("thoda sa palak") came back as 0: offer one pack and ask (planActions asks below 0.6)
