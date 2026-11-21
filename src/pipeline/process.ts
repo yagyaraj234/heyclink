@@ -3,6 +3,7 @@ import type { CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt, Tra
 import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveBrand, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
+import { normalizeAlias } from "../indic/alias-matching.ts";
 import { planActions } from "../actions/plan.ts";
 import type { Ambiguous, ExtractionWithAmbiguous, RecentCall } from "../actions/plan.ts";
 import { catalog, purchasedQuantity } from "../actions/cart.ts";
@@ -10,7 +11,8 @@ import { openaiStt } from "./adapters/openai-stt.ts";
 import { planMeals, weekday } from "./meals.ts";
 
 /** Internal extension, like ExtractionWithAmbiguous: `cookOff` = the YYYY-MM-DD the cook says she won't come. */
-export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string; stockouts?: string[]; neededBy?: string };
+/** `remember` = lasting household facts the owner may confirm into dietRules. */
+export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string; stockouts?: string[]; neededBy?: string; remember?: string[] };
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -30,6 +32,7 @@ interface LlmExtraction {
   notes: string[];
   neededBy?: string | null;
   cookOff?: string | null; // optional in code only, like `requested`
+  remember?: string[]; // optional in code only, like `requested`
 }
 
 const nullable = (type: string) => ({ type: [type, "null"] });
@@ -37,7 +40,7 @@ const nullable = (type: string) => ({ type: [type, "null"] });
 export const EXTRACTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["groceries", "advance", "notes", "cookOff", "neededBy"],
+  required: ["groceries", "advance", "notes", "cookOff", "neededBy", "remember"],
   properties: {
     groceries: {
       type: "array",
@@ -81,6 +84,11 @@ export const EXTRACTION_SCHEMA = {
       ],
     },
     notes: { type: "array", items: { type: "string" } },
+    remember: {
+      type: "array",
+      items: { type: "string" },
+      description: "lasting facts about what this household eats or avoids, said in this note and not already in dietRules ('papa ab cheeni nahi khayenge' → 'Papa: no sugar'); short English, one fact each; [] if none. Never one-off requests or groceries",
+    },
     neededBy: { ...nullable("string"), description: "Only if the cook gives a grocery deadline: ISO 8601 local time in India with +05:30. For dinner without a stated hour use 18:00 on the requested date. Otherwise null." },
     cookOff: { ...nullable("string"), description: "YYYY-MM-DD the cook won't come, said or asked for ('kal nahi aaungi', 'Sunday chutti', 'Sunday chutti chahiye', 'parso chhutti lungi'): the next such day counted from Today; null if she doesn't mention a day off" },
   },
@@ -99,8 +107,10 @@ const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=
   "\n- Spelling variants are one id: kishmish/kismis/किशमिश/किसमिस→raisins." +
   "\n- References to earlier notes or orders ('wahi jo subah bola tha', 'woh daal', 'same as last time', 'aur ek') resolve from recentNotes (the household's latest voice notes, oldest to newest) and recentOrders: use that item, and its brand and quantity unless new ones are said.";
 
+const RECENT_ORDERS = 20; // ponytail: older orders drop out of the prompt; summarize them if habits get lost
+
 function householdContext(h: Household, recent: RecentCall[]) {
-  return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history, recentNotes: recent, dietRules: h.family.dietRules });
+  return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history.slice(-RECENT_ORDERS), recentNotes: recent, dietRules: h.family.dietRules });
 }
 
 export function sttKeywords(h: Household): string[] {
@@ -133,13 +143,18 @@ function resolveTail(phrase: string): string | null {
   return null;
 }
 
-function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine | Ambiguous | undefined {
+/** The key a spoken item word is learned and looked up under: "Gobhi" and "gobhi" are one word. */
+export const wordKey = normalizeAlias;
+
+function toLine(l: LlmLine, harness: boolean, known: Set<string>, words: Record<string, string>): GroceryLine | Ambiguous | undefined {
   if (l.requested === false) return;
+  const key = wordKey(l.itemWord);
+  const learned = harness && Object.hasOwn(words, key) ? words[key] : undefined; // "constructor" is a word, not a method
   // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
   const branded = harness && spokenBrand(l.itemWord) !== undefined;
-  let item = harness
+  let item = learned ?? (harness
     ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord) ?? resolveTail(l.raw))
-    : l.item;
+    : l.item);
   const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
   let guess = false;
   if (!item || !(ITEMS as string[]).includes(item)) {
@@ -186,11 +201,12 @@ export interface PipelineOptions {
   harness?: boolean;
   recent?: RecentCall[]; // the household's last calls (≤5), oldest to newest; harness only
   now?: Date; // resolves "kal"/"Sunday"; tests pin it
+  words?: Record<string, string>; // wordKey(spoken word) → item id this household (or most households) confirmed; harness only
 }
 
 const IST = "Asia/Kolkata";
 
-export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [], now = new Date() }: PipelineOptions = {}): Promise<PipelineExtraction> {
+export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [], now = new Date(), words = {} }: PipelineOptions = {}): Promise<PipelineExtraction> {
   const today = `${now.toLocaleDateString("en-CA", { timeZone: IST })} (${now.toLocaleDateString("en-US", { timeZone: IST, weekday: "long" })})`;
   const context = harness ? `Household: ${householdContext(household, recent)}\n` : "";
   const known = new Set(harness ? [...household.history, ...recent].flatMap((o) => o.lines.map((l) => l.item)) : []);
@@ -202,7 +218,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
   });
   const stockouts = new Set<string>();
   const lines = out.groceries.map((source) => {
-    const line = toLine(source, harness, known);
+    const line = toLine(source, harness, known, words);
     if (!line || "candidates" in line) return line;
     if (source.stockout) stockouts.add(line.item);
     if (!harness) return line;
@@ -231,6 +247,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     if (deadline > now.getTime()) extraction.neededBy = new Date(deadline).toISOString();
   }
   if (stockouts.size) extraction.stockouts = [...stockouts];
+  if (out.remember?.length) extraction.remember = out.remember;
   const ambiguous = lines.filter((l): l is Ambiguous => l !== undefined && "candidates" in l);
   if (ambiguous.length) extraction.ambiguous = ambiguous;
   // trust boundary: planMeals needs a real calendar date
