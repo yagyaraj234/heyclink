@@ -540,3 +540,25 @@ test("processCall: no meal-plan card when the cook doesn't say she's off, or nam
     assert.equal(calls.length, 1); // no meal-plan call
   }
 });
+
+test('processCall uses a household pack for a stockout with no spoken quantity', async () => {
+  const { stt } = fakeStt('pyaaz khatam ho gaya', 'hi');
+  const { llm } = fakeLlm({ groceries: [{ raw: 'pyaaz khatam', itemWord: 'pyaaz', item: 'onion', qtyPhrase: '', quantityOmitted: true, stockout: true, qty: 1, unit: 'kg', confidence: 1 }], advance: null, notes: [] });
+  const result = await processCall({ audioPath: 'note', householdId: h.id }, h, { stt, llm });
+  assert.deepEqual(result.extraction.groceries.map(l => [l.qty, l.unit]), [[500, 'g']]);
+  assert.deepEqual((result.extraction as {stockouts?: string[]}).stockouts, ['onion']);
+  assert.match((result.extraction.groceries[0] as {interpretation?: string}).interpretation ?? '', /one catalog pack/i);
+});
+
+test('processCall reuses the last household purchase when a quantity is omitted', async () => {
+  const { stt } = fakeStt('onions and coriander', 'en');
+  const { llm } = fakeLlm({ groceries: [
+    { item: 'onion', itemWord: 'onion', raw: 'onions', qtyPhrase: '', quantityOmitted: true, qty: 1, unit: 'packet', confidence: 1 },
+    { item: 'coriander', itemWord: 'coriander', raw: 'one bunch coriander', qtyPhrase: 'one bunch', quantityOmitted: false, qty: 1, unit: 'bunch', confidence: 1 },
+  ], notes: [] });
+  const household: Household = { ...h, history: [{ at: '2026-11-18', lines: [
+    { item: 'onion', qty: 1.5, unit: 'kg' }, { item: 'coriander', qty: 2, unit: 'bunch' },
+  ] }] };
+  const result = await processCall({audioPath: 'note', householdId: h.id}, household, {stt, llm});
+  assert.deepEqual(result.extraction.groceries.map(l => [l.qty, l.unit]), [[1.5, 'kg'], [1, 'bunch']]);
+});
