@@ -5,8 +5,9 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LANGS } from "./contracts.ts";
-import type { ActionCard, CallResult, Household, Lang, Llm, Stt } from "./contracts.ts";
+import type { ActionCard, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import type { ProcessCall } from "./actions/pipeline-stub.ts";
+import { cartCard, isUnsure } from "./actions/plan.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 
 export interface AppDeps {
@@ -25,7 +26,9 @@ export function createApp({ processCall, stt, llm }: AppDeps) {
   // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
   const calls = new Map<string, CallResult>();
-  const actions = new Map<string, { card: ActionCard; householdId: string; approved: boolean }>();
+  // done = approved (cart/advance) or answered (question). lines = what the cart is built from; line = the question's line.
+  type Entry = { card: ActionCard; callId: string; householdId: string; done: boolean; lines?: GroceryLine[]; line?: GroceryLine };
+  const actions = new Map<string, Entry>();
 
   const app = express();
   app.use(express.json());
@@ -60,7 +63,15 @@ export function createApp({ processCall, stt, llm }: AppDeps) {
     }
 
     calls.set(result.callId, result);
-    for (const card of result.actions) actions.set(card.id, { card, householdId, approved: false });
+    const { callId, extraction } = result;
+    const unsure = extraction.groceries.filter(isUnsure); // question cards follow unsure-line order (planActions)
+    let q = 0;
+    for (const card of result.actions) {
+      const entry: Entry = { card, callId, householdId, done: false };
+      if (card.type === "cart") entry.lines = extraction.groceries.filter((l) => !isUnsure(l));
+      if (card.type === "question") entry.line = unsure[q++];
+      actions.set(card.id, entry);
+    }
     res.status(201).json(result);
   });
 
@@ -75,14 +86,45 @@ export function createApp({ processCall, stt, llm }: AppDeps) {
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
     if (card.type === "question") return void res.status(400).json({ error: "questions are answered, not approved" });
-    if (!entry.approved && card.type === "cart") {
+    if (!entry.done && card.type === "cart") {
       households.get(entry.householdId)?.history.push({
         at: new Date().toISOString().slice(0, 10),
         lines: card.cart.lines.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
       });
     }
-    entry.approved = true;
+    entry.done = true;
     res.json({ status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) });
+  });
+
+  app.post("/actions/:id/answer", async (req, res) => {
+    const entry = actions.get(req.params.id);
+    if (!entry) return void res.status(404).json({ error: "unknown action" });
+    const { card, line } = entry;
+    if (card.type !== "question" || !line) return void res.status(400).json({ error: "only questions can be answered" });
+    if (entry.done) return void res.status(409).json({ error: "already answered" });
+    const option: unknown = req.body?.option;
+    if (typeof option !== "string" || !card.options.includes(option)) {
+      return void res.status(400).json({ error: `option must be one of ${JSON.stringify(card.options)}` });
+    }
+    if (option !== card.options[0]) {
+      entry.done = true;
+      return void res.json({ status: "answered" });
+    }
+
+    const call = calls.get(entry.callId)!;
+    const cartEntry = call.actions.map((a) => actions.get(a.id)!).find((e) => e.card.type === "cart");
+    if (cartEntry?.done) return void res.status(409).json({ error: "cart already approved" });
+    const lines = [...(cartEntry?.lines ?? []), line];
+    const fresh = await cartCard(lines, households.get(entry.householdId)!);
+    entry.done = true;
+    if (cartEntry) {
+      Object.assign(cartEntry.card, { cart: fresh.cart, needsApproval: fresh.needsApproval });
+      cartEntry.lines = lines;
+    } else {
+      call.actions.unshift(fresh);
+      actions.set(fresh.id, { card: fresh, callId: entry.callId, householdId: entry.householdId, done: false, lines });
+    }
+    res.json({ status: "answered", cart: cartEntry?.card ?? fresh });
   });
 
   app.get("/households/:id", (req, res) => {
