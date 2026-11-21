@@ -169,3 +169,28 @@ test("CORS: preflight and responses allow the web origin", async (t) => {
   const get = await fetch(`${base}/households/h1`, { headers: { origin: "https://web.example" } });
   assert.equal(get.headers.get("access-control-allow-origin"), "https://web.example");
 });
+
+test("POST /calls names the temp audio file by Content-Type so adapters can pick the MIME", async (t) => {
+  const seen: { path?: string } = {};
+  const { base, close } = await serve(fakeStt(seen));
+  t.after(close);
+  const cases: [contentType: string, ext: string][] = [
+    ["audio/webm;codecs=opus", "webm"],
+    ["audio/WEBM", "webm"],
+    ["audio/ogg; codecs=opus", "ogg"],
+    ["audio/mpeg", "mp3"],
+    ["audio/mp4", "m4a"],
+    ["audio/x-m4a", "m4a"],
+    ["audio/wav", "wav"],
+    ["audio/x-wav", "wav"],
+    ["audio/wave", "wav"],
+    ["audio/vnd.wave", "wav"],
+    ["audio/flac", "flac"],
+    ["audio/x-weird+thing", "bin"],
+  ];
+  for (const [contentType, ext] of cases) {
+    const res = await fetch(`${base}/calls?householdId=h1`, { method: "POST", headers: { "content-type": contentType }, body: "x" });
+    assert.equal(res.status, 201, contentType);
+    assert.match(seen.path ?? "", new RegExp(`/vfi-[0-9a-f-]+\\.${ext}$`), contentType);
+  }
+});
