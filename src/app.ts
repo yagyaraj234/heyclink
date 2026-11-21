@@ -5,15 +5,18 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LANGS } from "./contracts.ts";
-import type { ActionCard, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
-import type { ProcessCall } from "./actions/pipeline-stub.ts";
+import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
+
+/** Lane 1's processCall (src/pipeline/process.ts) satisfies this; tests inject it with fake ports. */
+export type ProcessCall = (input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }) => Promise<CallResult>;
 
 export interface AppDeps {
   processCall: ProcessCall;
   stt: Stt;
   llm: Llm;
+  corsOrigin?: string; // default "*": the API has no cookies or auth
 }
 
 // STT providers sniff format from the file extension.
@@ -22,7 +25,7 @@ const extFor = (contentType = "") => {
   return ({ mpeg: "mp3", mp4: "m4a" } as Record<string, string>)[sub] ?? sub;
 };
 
-export function createApp({ processCall, stt, llm }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) {
   // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
   const calls = new Map<string, CallResult>();
@@ -31,6 +34,16 @@ export function createApp({ processCall, stt, llm }: AppDeps) {
   const actions = new Map<string, Entry>();
 
   const app = express();
+  app.use((req, res, next) => {
+    res.set({
+      "access-control-allow-origin": corsOrigin,
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers": "content-type",
+      vary: "origin",
+    });
+    if (req.method === "OPTIONS") return void res.sendStatus(204);
+    next();
+  });
   app.use(express.json());
   app.use(express.raw({ type: "audio/*", limit: "25mb" }));
 

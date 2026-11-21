@@ -1,13 +1,18 @@
 import { createApp } from "./app.ts";
-import { processCall } from "./actions/pipeline-stub.ts";
-import type { Llm, Stt } from "./contracts.ts";
+import { processCall } from "./pipeline/process.ts";
+import { openaiLlm } from "./pipeline/adapters/openai-llm.ts";
+import { openaiStt } from "./pipeline/adapters/openai-stt.ts";
+import { sarvamStt } from "./pipeline/adapters/sarvam-stt.ts";
 
-// TODO(lane 1 merge): import processCall and the real Stt/Llm adapters from src/pipeline/.
-const notMerged = (): never => {
-  throw new Error("pipeline not wired yet: Lane 1 adapters pending");
-};
-const stt: Stt = { transcribe: async () => notMerged() };
-const llm: Llm = { json: async () => notMerged() };
+const sttProviders = { sarvam: sarvamStt, openai: openaiStt };
+const provider = process.env.STT_PROVIDER || "sarvam";
+if (!Object.hasOwn(sttProviders, provider)) {
+  throw new Error(`STT_PROVIDER must be one of ${Object.keys(sttProviders).join(", ")}; got "${provider}"`);
+}
+const stt = sttProviders[provider as keyof typeof sttProviders]();
 
 const port = Number(process.env.PORT ?? 3000);
-createApp({ processCall, stt, llm }).listen(port, () => console.log(`voice-for-india on :${port}`));
+const corsOrigin = process.env.CORS_ORIGIN || "*";
+createApp({ processCall, stt, llm: openaiLlm(), corsOrigin }).listen(port, () =>
+  console.log(`voice-for-india on :${port} (stt=${provider}, cors=${corsOrigin})`),
+);
