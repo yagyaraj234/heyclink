@@ -46,6 +46,8 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
   const [reviewed, setReviewed] = useState<ReviewCart | null>(fromAlert ? cart : null);
   const [editing, setEditing] = useState<number | null>(null);
   const [quantity, setQuantity] = useState("");
+  const [useStoreLinks, setUseStoreLinks] = useState(false);
+  const connected = !!(ownerToken && instamartAvailable);
   const [unit, setUnit] = useState<Unit>("g");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -103,6 +105,8 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
   return <View style={s.section}>
     <View style={s.row}><Text accessibilityRole="header" style={s.title}>Review order</Text>
       <Button secondary label="Close" disabled={working} onPress={() => setReviewed(null)} /></View>
+    {connected && !useStoreLinks && <Button secondary label="Use store links instead" disabled={locked} onPress={() => setUseStoreLinks(true)} />}
+    {useStoreLinks && <Text style={s.muted}>Buy the items in Instamart, then edit the quantities here to match your purchase before marking them bought.</Text>}
     {reviewed.lines.map((line, index) => <View key={index} style={s.line}>
       <PackLine line={line} />
       {editing === index ? <>
@@ -123,7 +127,7 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
           }} />
           <Button secondary label={`Remove ${line.item}`} disabled={locked} onPress={() => editLine(index, 0, line.unit)} />
         </>}
-        {!instamartAvailable && <Button secondary label={`Find ${line.item} on Instamart`} disabled={locked}
+        {(!connected || useStoreLinks) && <Button secondary label={`Find ${line.item} on Instamart`} disabled={locked}
           onPress={() => void go(() => Linking.openURL(line.searchUrl))} />}
       </View>}
     </View>)}
@@ -138,7 +142,7 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
     {error !== "" && <Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>}
     {!stale && editing === null && reviewed.lines.length > 0 && reviewed.reviewId && <>
       {track(reviewed.reviewId)}
-      {instamartAvailable && ownerToken && <Button label="Review with Instamart" disabled={locked} onPress={() => void go(providerReview)} />}
+      {connected && <Button label="Review with Instamart" disabled={locked} onPress={() => void go(providerReview)} />}
       {demo && <View style={s.buttons}>
         <Button label="Demo order now" disabled={locked} onPress={() => onApprove({ order: "now", reviewId: reviewed.reviewId! })} />
         <Button secondary label="Demo tomorrow at 8 AM" disabled={locked} onPress={() => {
