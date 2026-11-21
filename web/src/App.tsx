@@ -17,11 +17,13 @@ export function App() {
   const [calls, setCalls] = useState<CallResult[]>([]); // oldest first
   const [household, setHousehold] = useState<Household | null>(null);
   // Server tracks approved/answered but CallResult doesn't carry it: actionId → "approved" | upiUrl | chosen option.
-  // ponytail: lost on reload; add a `done` field to GET /calls if the demo needs it.
+  // ponytail: lost on reload; switch to the per-action status map on GET /calls once lane 2 ships it.
   const [done, setDone] = useState<Record<string, string>>({});
-  const [pending, setPending] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // The call in flight: shown at once as Lakshmi's bubble with a spinner, replaced by the real call on reply.
+  const [sending, setSending] = useState<{ text: string; t0: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLDivElement>(null);
 
   const refreshHousehold = () => api<Household>(`/households/${HOUSEHOLD}`).then(setHousehold);
   const refreshCall = async (callId: string) => {
@@ -29,52 +31,64 @@ export function App() {
     setCalls((cs) => cs.map((c) => (c.callId === callId ? fresh : c)));
   };
 
-  const run = async (label: string, fn: () => Promise<void>) => {
-    setPending(label);
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
     setError(null);
     try {
       await fn();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setPending(null);
+      setBusy(false);
+      setSending(null);
     }
   };
 
-  useEffect(() => {
-    run("Loading…", async () => {
+  const load = () =>
+    run(async () => {
       const [list] = await Promise.all([api<CallResult[]>(`/calls?householdId=${HOUSEHOLD}`), refreshHousehold()]);
       setCalls(list.reverse());
     });
-  }, []);
+  useEffect(() => void load(), []);
+  // Only new or in-flight calls scroll; approving a card higher up keeps your place.
+  // Scroll the thread itself: scrollIntoView would also scroll the phone layout's page past the thread.
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth" });
-  }, [calls.length, pending]);
+    thread.current?.scrollTo({ top: thread.current.scrollHeight, behavior: "smooth" });
+  }, [calls.length, sending]);
 
-  const addCall = (label: string, init: RequestInit) =>
-    run(label, async () => {
+  const addCall = (text: string, init: RequestInit) => {
+    setSending({ text, t0: Date.now() });
+    return run(async () => {
       const call = await api<CallResult>(`/calls?householdId=${HOUSEHOLD}`, { method: "POST", ...init });
       setCalls((cs) => [...cs, call]);
     });
-  const sendAudio = (blob: Blob, type: string) =>
-    addCall("Listening to Lakshmi…", { headers: { "content-type": type }, body: blob });
+  };
+  const sendAudio = (blob: Blob, type: string, label: string) =>
+    addCall(label, { headers: { "content-type": type }, body: blob });
   const sendText = (transcript: string) =>
-    addCall("Reading Lakshmi's note…", {
+    addCall(transcript, {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ householdId: HOUSEHOLD, transcript }),
     });
 
   const approve = (callId: string, card: ActionCard) =>
-    run("Approving…", async () => {
+    run(async () => {
       const r = await api<{ upiUrl?: string }>(`/actions/${card.id}/approve`, { method: "POST" });
       setDone((d) => ({ ...d, [card.id]: r.upiUrl ?? "approved" }));
       await Promise.all([refreshCall(callId), refreshHousehold()]);
     });
   const answer = (callId: string, card: ActionCard, option: string) =>
-    run("Updating cart…", async () => {
+    run(async () => {
       await postJson(`/actions/${card.id}/answer`, { option });
       setDone((d) => ({ ...d, [card.id]: option }));
       await refreshCall(callId); // the cart card is updated (or created) server-side
+    });
+
+  const reset = () =>
+    run(async () => {
+      await api(`/households/${HOUSEHOLD}/reset`, { method: "POST" });
+      setDone({});
+      await load();
     });
 
   return (
@@ -84,20 +98,35 @@ export function App() {
           <h1>Lakshmi</h1>
           <span className="muted">cook · household {HOUSEHOLD}</span>
         </header>
-        <div className="thread">
-          {calls.length === 0 && !pending && <p className="muted center">No calls yet. Record, upload or type a note below.</p>}
+        <div className="thread" ref={thread}>
+          {calls.length === 0 && !sending && <p className="muted center">No calls yet. Record, upload or type a note below.</p>}
           {calls.map((call) => (
             <Call key={call.callId} call={call} household={household} done={done}
               onApprove={(c) => approve(call.callId, c)} onAnswer={(c, o) => answer(call.callId, c, o)} />
           ))}
-          {pending && <div className="bubble cook muted">{pending}</div>}
-          <div ref={bottom} />
+          {sending && <Sending {...sending} />}
         </div>
         {error && <div className="error" role="alert">{error}</div>}
-        <Composer busy={pending !== null} onAudio={sendAudio} onText={sendText} onError={setError} />
+        <Composer busy={busy} onAudio={sendAudio} onText={sendText} onError={setError} />
       </main>
-      <Memory household={household} />
+      <Memory household={household} busy={busy} onReset={reset} />
     </div>
+  );
+}
+
+function Sending({ text, t0 }: { text: string; t0: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <section className="call">
+      <div className="bubble cook">{text}</div>
+      <span className="chip pending" role="status">
+        <span className="spinner" aria-hidden /> working… {((now - t0) / 1000).toFixed(1)} s
+      </span>
+    </section>
   );
 }
 
@@ -195,7 +224,7 @@ function Card({ card, limit, done, onApprove, onAnswer }: {
 
 function Composer({ busy, onAudio, onText, onError }: {
   busy: boolean;
-  onAudio: (blob: Blob, type: string) => void;
+  onAudio: (blob: Blob, type: string, label: string) => void;
   onText: (text: string) => void;
   onError: (message: string) => void;
 }) {
@@ -219,10 +248,11 @@ function Composer({ busy, onAudio, onText, onError }: {
     r.ondataavailable = (e) => chunks.push(e.data);
     r.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
-      onAudio(new Blob(chunks, { type: r.mimeType }), r.mimeType);
+      onAudio(new Blob(chunks, { type: r.mimeType }), r.mimeType, `🎤 Voice note · ${((Date.now() - t0) / 1000).toFixed(1)} s`);
     };
+    const t0 = Date.now();
     r.start();
-    rec.current = { r, t0: Date.now() };
+    rec.current = { r, t0 };
     setRecording(true);
   };
   const up = () => {
@@ -233,7 +263,7 @@ function Composer({ busy, onAudio, onText, onError }: {
     if (!file) return;
     // Express only parses audio/* as raw; an empty or video/* type would hit the JSON branch.
     const type = file.type.startsWith("audio/") ? file.type : `audio/${file.name.split(".").pop() ?? "mpeg"}`;
-    onAudio(file, type);
+    onAudio(file, type, `📎 ${file.name}`);
   };
 
   return (
@@ -258,11 +288,14 @@ function Composer({ busy, onAudio, onText, onError }: {
   );
 }
 
-function Memory({ household: h }: { household: Household | null }) {
+function Memory({ household: h, busy, onReset }: { household: Household | null; busy: boolean; onReset: () => void }) {
   if (!h) return <aside />;
   return (
     <aside>
-      <h2>Household memory</h2>
+      <div className="row">
+        <h2>Household memory</h2>
+        <button className="small" onClick={onReset} disabled={busy}>Reset demo</button>
+      </div>
       <dl>
         <dt>Cook</dt><dd>{h.cook.name} · {h.cook.lang} · {h.cook.upiId}</dd>
         <dt>Approval limit</dt><dd>{rupees(h.approvalLimit)}</dd>
