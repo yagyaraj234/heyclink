@@ -599,3 +599,45 @@ test("processCall totals compatible lines on the latest receipt for an omitted q
   const result = await processCall({ audioPath: "note", householdId: h.id }, household, { stt, llm });
   assert.deepEqual(result.extraction.groceries.map(l => [l.qty, l.unit]), [[1000, "g"]]);
 });
+
+test("processCall: the LLM sees only the household's last 20 orders", async () => {
+  const { stt } = fakeStt("ek kilo atta", "hi");
+  const { llm, calls } = fakeLlm({ groceries: [], advance: null, notes: [] });
+  const history = Array.from({ length: 25 }, (_, i) => ({ at: `2026-10-${String(i + 1).padStart(2, "0")}`, lines: [{ item: "atta", qty: 1, unit: "kg" as const }] }));
+
+  await processCall({ audioPath: "note", householdId: h.id }, { ...h, history }, { stt, llm });
+
+  assert.doesNotMatch(calls[0]!.user, /2026-10-05/);
+  assert.match(calls[0]!.user, /2026-10-06/);
+  assert.match(calls[0]!.user, /2026-10-25/);
+});
+
+test("processCall: a lasting household fact the cook mentions comes back in extraction.remember", async () => {
+  const { stt } = fakeStt("bhaiya ab cheeni nahi khayenge, doctor ne mana kiya", "hi");
+  const { llm, calls } = fakeLlm({ groceries: [], advance: null, notes: [], remember: ["Bhaiya no sugar (doctor's advice)"] });
+
+  const res = await processCall({ audioPath: "note", householdId: h.id }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.remember, ["Bhaiya no sugar (doctor's advice)"]);
+  assert.ok((calls[0]!.schema as { required: string[] }).required.includes("remember"));
+});
+
+test("processCall: words this household taught win over the lexicon and the LLM; plain mode ignores them", async () => {
+  const { stt } = fakeStt("ek gobhi aur ek kilo chana", "hi");
+  const reply = {
+    groceries: [
+      { raw: "ek Gobhi", itemWord: "Gobhi", qtyPhrase: "ek", item: "cauliflower", candidates: [], qty: 1, unit: "piece", brand: null, confidence: 0.9 },
+      { raw: "ek kilo chana", itemWord: "chana", qtyPhrase: "ek kilo", item: null, candidates: ["kabuli-chana", "kala-chana"], qty: 1, unit: "kg", brand: null, confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  };
+  const words = { gobhi: "cabbage", chana: "kala-chana" };
+
+  const taught = await processCall({ audioPath: "note", householdId: h.id }, h, { stt, llm: fakeLlm(reply).llm }, { words });
+  assert.deepEqual(taught.extraction.groceries.map((g) => g.item), ["cabbage", "kala-chana"]);
+  assert.equal(taught.extraction.ambiguous, undefined);
+
+  const plain = await processCall({ audioPath: "note", householdId: h.id }, h, { stt, llm: fakeLlm(reply).llm }, { words, harness: false });
+  assert.deepEqual(plain.extraction.groceries.map((g) => g.item), ["cauliflower"]);
+});
