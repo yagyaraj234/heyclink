@@ -74,7 +74,7 @@ export const EXTRACTION_SCHEMA = {
       ],
     },
     notes: { type: "array", items: { type: "string" } },
-    cookOff: { ...nullable("string"), description: "YYYY-MM-DD the cook says she won't come ('kal nahi aaungi', 'Sunday chutti'), counted from Today; null if she doesn't say" },
+    cookOff: { ...nullable("string"), description: "YYYY-MM-DD the cook won't come, said or asked for ('kal nahi aaungi', 'Sunday chutti', 'Sunday chutti chahiye', 'parso chhutti lungi'): the next such day counted from Today; null if she doesn't mention a day off" },
   },
 } as const;
 
