@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { ActionCard, CallResult, Household } from "../../src/contracts.ts";
+import type { ActionCard, CallResult, GroceryLine, Household } from "../../src/contracts.ts";
 
 const HOUSEHOLD = "h1";
 // The API adds a per-action status to every call (CallResult itself is frozen).
 type ActionStatus = "pending" | "approved" | "answered";
 type Call = CallResult & { status: Record<string, ActionStatus> };
+// ponytail: mode=plain isn't on main yet; the toggle shows only with ?compare. Drop this flag once it lands.
+const COMPARE = new URLSearchParams(location.search).has("compare");
 const rupees = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -23,6 +25,8 @@ export function App() {
   // The call in flight: shown at once as Lakshmi's bubble with a spinner, replaced by the real call on reply.
   const [sending, setSending] = useState<{ text: string; t0: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [compare, setCompare] = useState(false);
+  const [base, setBase] = useState<Record<string, CallResult>>({}); // callId → plain run; not stored server-side, gone on reload
   const thread = useRef<HTMLDivElement>(null);
 
   const refreshHousehold = () => api<Household>(`/households/${HOUSEHOLD}`).then(setHousehold);
@@ -54,13 +58,19 @@ export function App() {
   // Scroll the thread itself: scrollIntoView would also scroll the phone layout's page past the thread.
   useEffect(() => {
     thread.current?.scrollTo({ top: thread.current.scrollHeight, behavior: "smooth" });
-  }, [calls.length, sending]);
+  }, [calls.length, sending, Object.keys(base).length]);
 
   const addCall = (text: string, init: RequestInit) => {
     setSending({ text, t0: Date.now() });
     return run(async () => {
+      // Same note, in parallel, through the base model (no household memory). Its failure never blocks the real call.
+      const plain = COMPARE && compare
+        ? api<CallResult>(`/calls?householdId=${HOUSEHOLD}&mode=plain`, { method: "POST", ...init })
+          .catch((e: Error) => void setError(`Base model: ${e.message}`))
+        : undefined;
       const call = await api<Call>(`/calls?householdId=${HOUSEHOLD}`, { method: "POST", ...init });
       setCalls((cs) => [...cs, call]);
+      void plain?.then((b) => b && setBase((m) => ({ ...m, [call.callId]: b })));
     });
   };
   const sendAudio = (blob: Blob, type: string, label: string) =>
@@ -98,13 +108,13 @@ export function App() {
         <div className="thread" ref={thread}>
           {calls.length === 0 && !sending && <p className="muted center">No calls yet. Record, upload or type a note below.</p>}
           {calls.map((call) => (
-            <CallView key={call.callId} call={call} household={household}
+            <CallView key={call.callId} call={call} base={base[call.callId]} household={household}
               onApprove={(c) => approve(call.callId, c)} onAnswer={(c, o) => answer(call.callId, c, o)} />
           ))}
           {sending && <Sending {...sending} />}
         </div>
         {error && <div className="error" role="alert">{error}</div>}
-        <Composer busy={busy} onAudio={sendAudio} onText={sendText} onError={setError} />
+        <Composer busy={busy} compare={compare} onCompare={setCompare} onAudio={sendAudio} onText={sendText} onError={setError} />
       </main>
       <Memory household={household} busy={busy} onReset={reset} />
     </div>
@@ -127,8 +137,9 @@ function Sending({ text, t0 }: { text: string; t0: number }) {
   );
 }
 
-function CallView({ call, household, onApprove, onAnswer }: {
+function CallView({ call, base, household, onApprove, onAnswer }: {
   call: Call;
+  base: CallResult | undefined;
   household: Household | null;
   onApprove: (card: ActionCard) => void;
   onAnswer: (card: ActionCard, option: string) => void;
@@ -148,11 +159,51 @@ function CallView({ call, household, onApprove, onAnswer }: {
           <Card key={card.id} card={card} limit={household?.approvalLimit} status={call.status[card.id]}
             onApprove={() => onApprove(card)} onAnswer={(o) => onAnswer(card, o)} />
         ))}
-        <span className="chip" title="agent response latency">
-          {Math.round(t.totalMs)} ms · stt {Math.round(t.sttMs)} · extract {Math.round(t.extractMs)} · plan {Math.round(t.planMs)}
-        </span>
+        <Latency call={call} />
+        {base && <BaseModel ours={call} base={base} />}
       </div>
     </section>
+  );
+}
+
+function Latency({ call: { timings: t } }: { call: CallResult }) {
+  return (
+    <span className="chip" title="agent response latency">
+      {Math.round(t.totalMs)} ms · stt {Math.round(t.sttMs)} · extract {Math.round(t.extractMs)} · plan {Math.round(t.planMs)}
+    </span>
+  );
+}
+
+// Read-only plain-LLM run of the same note; tags mark where it differs from ours.
+function BaseModel({ ours, base }: { ours: CallResult; base: CallResult }) {
+  const mine = new Map(ours.extraction.groceries.map((l) => [l.item, l]));
+  const theirs = new Map(base.extraction.groceries.map((l) => [l.item, l]));
+  const amount = (l: GroceryLine) => `${l.qty} ${l.unit}`;
+  return (
+    <div className="card base">
+      <h3>Base model <span className="muted">· no household memory · read-only</span></h3>
+      <p className="muted">“{base.transcript.text}”</p>
+      <table>
+        <tbody>
+          {[...new Set([...mine.keys(), ...theirs.keys()])].map((item) => {
+            const o = mine.get(item), b = theirs.get(item);
+            const diffs = !b ? ["missed"] : !o ? ["not in ours"] : [
+              amount(o) !== amount(b) && `ours ${amount(o)}`,
+              o.brand !== b.brand && `ours ${o.brand ?? "no brand"}`,
+            ].filter((d) => d !== false);
+            return (
+              <tr key={item}>
+                <td>{item}</td>
+                <td>{b ? amount(b) : "—"}</td>
+                <td>{b?.brand ?? "—"}</td>
+                <td>{diffs.map((d) => <span key={d} className="badge warn">{d}</span>)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <Latency call={base} />
+    </div>
   );
 }
 
@@ -219,8 +270,10 @@ function Card({ card, limit, status, onApprove, onAnswer }: {
   );
 }
 
-function Composer({ busy, onAudio, onText, onError }: {
+function Composer({ busy, compare, onCompare, onAudio, onText, onError }: {
   busy: boolean;
+  compare: boolean;
+  onCompare: (on: boolean) => void;
   onAudio: (blob: Blob, type: string, label: string) => void;
   onText: (text: string) => void;
   onError: (message: string) => void;
@@ -281,6 +334,11 @@ function Composer({ busy, onAudio, onText, onError }: {
       </label>
       <input className="text" placeholder="Or type what Lakshmi said…" value={text} onChange={(e) => setText(e.target.value)} />
       <button type="submit" disabled={busy || !text.trim()}>Send</button>
+      {COMPARE && (
+        <label className="compare" title="Also send the note to the base model (no household memory) and show the difference">
+          <input type="checkbox" checked={compare} onChange={(e) => onCompare(e.target.checked)} /> <span className="long">Compare with </span>base model
+        </label>
+      )}
     </form>
   );
 }
