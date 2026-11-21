@@ -1,0 +1,15 @@
+{
+  "id": "cook-hinglish-01",
+  "source": "hand-written cook-style note",
+  "lang": "hi",
+  "transcript": "Didi atta khatam ho gaya hai, wahi wala do kilo le aana, aur do gaddi dhaniya, ek packet Amul doodh. Aur mujhe paanch sau advance chahiye, kal 8 baje aaungi.",
+  "gold": {
+    "groceries": [
+      { "raw": "atta ... wahi wala do kilo", "item": "atta", "qty": 2, "unit": "kg", "brand": "aashirvaad", "confidence": 1 },
+      { "raw": "do gaddi dhaniya", "item": "coriander", "qty": 2, "unit": "bunch", "confidence": 1 },
+      { "raw": "ek packet Amul doodh", "item": "milk", "qty": 1, "unit": "packet", "brand": "amul", "confidence": 1 }
+    ],
+    "advance": { "amount": 500 },
+    "notes": ["kal 8 baje aaungi"]
+  }
+}

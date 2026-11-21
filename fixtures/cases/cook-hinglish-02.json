@@ -1,0 +1,14 @@
+{
+  "id": "cook-hinglish-02",
+  "source": "hand-written cook-style note",
+  "lang": "hi",
+  "transcript": "Bhaiya dedh kilo pyaaz, paav kilo hari mirch aur aadha litre dahi mangwa dena. Chawal bhi khatam hone wala hai.",
+  "gold": {
+    "groceries": [
+      { "raw": "dedh kilo pyaaz", "item": "onion", "qty": 1.5, "unit": "kg", "confidence": 1 },
+      { "raw": "paav kilo hari mirch", "item": "green-chilli", "qty": 0.25, "unit": "kg", "confidence": 1 },
+      { "raw": "aadha litre dahi", "item": "curd", "qty": 0.5, "unit": "l", "confidence": 1 }
+    ],
+    "notes": ["chawal bhi khatam hone wala hai"]
+  }
+}

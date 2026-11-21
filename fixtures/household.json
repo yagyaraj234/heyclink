@@ -1,0 +1,16 @@
+{
+  "id": "h1",
+  "cook": { "name": "Lakshmi", "lang": "hi", "monthlySalary": 12000, "upiId": "lakshmi@okaxis" },
+  "family": { "headcount": 4, "dietRules": ["no onion on Tuesdays", "papa diabetic: low sugar"] },
+  "brands": { "atta": "aashirvaad", "milk": "amul", "rice": "india-gate" },
+  "pantry": {
+    "atta": { "qty": 0, "unit": "kg" },
+    "onion": { "qty": 1, "unit": "kg" },
+    "milk": { "qty": 1, "unit": "packet" }
+  },
+  "platform": "mock",
+  "approvalLimit": 2000,
+  "history": [
+    { "at": "2026-11-14", "lines": [{ "item": "atta", "qty": 5, "unit": "kg", "brand": "aashirvaad" }] }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "indicvoices-hi-cooking-01",
+  "source": "SPRINGLab/IndicVoices-R_Hindi KYP - Cooking (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "तब मैंने सोचा घर में बैठे बैठे क्या करें तब मैंने रसगुल्ले बनाए इसमें मैंने सबसे पहले मैंने एक किलो दूध मंगाया फिर उसमें नींबू की उसको पहले गरम किया",
+  "gold": {
+    "groceries": [
+      { "raw": "एक किलो दूध", "item": "milk", "qty": 1, "unit": "kg", "confidence": 1 }
+    ],
+    "notes": []
+  }
+}

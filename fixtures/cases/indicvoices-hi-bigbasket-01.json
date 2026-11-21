@@ -1,0 +1,12 @@
+{
+  "id": "indicvoices-hi-bigbasket-01",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "मैं दस पैकेट डाबर अश्वगंधा टैबलेट्स ख़रीदना चाहता हूँ",
+  "gold": {
+    "groceries": [
+      { "raw": "दस पैकेट डाबर अश्वगंधा टैबलेट्स", "item": "ashwagandha-tablets", "qty": 10, "unit": "packet", "brand": "dabur", "confidence": 1 }
+    ],
+    "notes": []
+  }
+}
