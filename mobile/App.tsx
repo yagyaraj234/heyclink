@@ -3,12 +3,12 @@ import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, Te
 import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder } from "expo-audio";
-import type { ActionCard, CallResult } from "../src/contracts.ts";
+import type { ActionCard, CallResult, Diet, Goal, Lang, Weekday } from "../src/contracts.ts";
 
 // The API runs on the same machine as the Expo dev server, so default to its LAN host on :3000.
 const API = process.env.EXPO_PUBLIC_API_URL ?? `http://${(Constants.expoConfig?.hostUri ?? "localhost").split(":")[0]}:3000`;
-// ponytail: fixed demo household until signup/join (PR 2) hands out real ids.
-const HOUSEHOLD = "h1";
+// The seeded demo household, for skipping signup/join.
+const DEMO_HOUSEHOLD = "h1";
 
 type ActionStatus = "pending" | "approved" | "answered";
 type Call = CallResult & { status: Record<string, ActionStatus> };
@@ -27,6 +27,9 @@ const postJson = <T,>(path: string, body: unknown) =>
 
 export default function App() {
   const [role, setRole] = useState<Role | null>(null);
+  // Kept per role so one phone can demo signup on the owner side and join on the cook side.
+  const [ownerHouse, setOwnerHouse] = useState<string | null>(null);
+  const [cookHouse, setCookHouse] = useState<string | null>(null);
   return (
     <View style={s.screen}>
       <StatusBar style="dark" />
@@ -39,8 +42,8 @@ export default function App() {
         )}
       </View>
       {role === null && <RolePick onPick={setRole} />}
-      {role === "cook" && <Cook />}
-      {role === "owner" && <Owner />}
+      {role === "cook" && (cookHouse ? <Cook householdId={cookHouse} /> : <Join onJoin={setCookHouse} />)}
+      {role === "owner" && (ownerHouse ? <Owner householdId={ownerHouse} /> : <Signup onDone={setOwnerHouse} />)}
     </View>
   );
 }
@@ -55,9 +58,150 @@ function RolePick({ onPick }: { onPick: (r: Role) => void }) {
   );
 }
 
+// ---- Signup (owner) and join (cook) ----------------------------------------
+
+const DAYS: Weekday[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+function Choice<T extends string>({ options, value, onChange, multi }: {
+  options: readonly T[];
+  value: T | T[];
+  onChange: (v: T) => void;
+  multi?: boolean;
+}) {
+  return (
+    <View style={s.options}>
+      {options.map((o) => {
+        const on = multi ? (value as T[]).includes(o) : value === o;
+        return (
+          <Pressable key={o} onPress={() => onChange(o)} style={[s.seg, on && s.segOn]}>
+            <Text style={[s.segText, on && s.segTextOn]}>{o}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function Field({ label, ...props }: { label: string } & React.ComponentProps<typeof TextInput>) {
+  return (
+    <View style={s.field}>
+      <Text style={s.label}>{label}</Text>
+      <TextInput style={s.input} {...props} />
+    </View>
+  );
+}
+
+function Signup({ onDone }: { onDone: (householdId: string) => void }) {
+  const [f, setF] = useState({ ownerName: "", ownerPhone: "", cookName: "", upiId: "", salary: "", limit: "500", protein: "" });
+  const [lang, setLang] = useState<Lang>("hi");
+  const [offDays, setOffDays] = useState<Weekday[]>([]);
+  const [goal, setGoal] = useState<Goal>("maintain");
+  const [diet, setDiet] = useState<Diet>("veg");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ id: string; code: string } | null>(null);
+  const set = (k: keyof typeof f) => (v: string) => setF((p) => ({ ...p, [k]: v }));
+  const num = (v: string) => Number(v.replace(/[^\d.]/g, "")) || 0;
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      // ponytail: body and response shapes guessed from the brief; POST /households isn't on any branch yet.
+      const r = await postJson<{ id?: string; householdId?: string; household?: { id: string }; code?: string; cookCode?: string }>("/households", {
+        owner: { name: f.ownerName.trim(), phone: f.ownerPhone.trim() },
+        cook: { name: f.cookName.trim(), lang, upiId: f.upiId.trim(), monthlySalary: num(f.salary), offDays },
+        approvalLimit: num(f.limit),
+        goals: { goal, diet, ...(f.protein ? { proteinG: num(f.protein) } : {}) },
+      });
+      const id = r.id ?? r.householdId ?? r.household?.id;
+      const code = r.code ?? r.cookCode;
+      if (!id || !code) throw new Error(`Unexpected response: ${JSON.stringify(r)}`);
+      setDone({ id, code });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <View style={s.center}>
+        <Text style={s.h2}>Give this to {f.cookName.trim() || "your cook"}</Text>
+        <Text style={s.code} selectable>{done.code}</Text>
+        <Text style={[s.muted, s.centerText]}>They enter it on the cook side of the app.</Text>
+        <Pressable style={s.bigBtn} onPress={() => onDone(done.id)}><Text style={s.bigBtnText}>Go to the feed</Text></Pressable>
+      </View>
+    );
+  }
+  const ready = f.ownerName.trim() && f.cookName.trim() && f.upiId.trim();
+  return (
+    <ScrollView contentContainerStyle={s.form} keyboardShouldPersistTaps="handled">
+      <Text style={s.h3}>You</Text>
+      <Field label="Name" value={f.ownerName} onChangeText={set("ownerName")} />
+      <Field label="Phone" value={f.ownerPhone} onChangeText={set("ownerPhone")} keyboardType="phone-pad" />
+      <Text style={s.h3}>Your cook</Text>
+      <Field label="Name" value={f.cookName} onChangeText={set("cookName")} placeholder="Lakshmi" />
+      <Text style={s.label}>Language</Text>
+      <Choice options={["hi", "te", "en"] as const} value={lang} onChange={setLang} />
+      <Field label="UPI id" value={f.upiId} onChangeText={set("upiId")} autoCapitalize="none" placeholder="name@okaxis" />
+      <Field label="Monthly salary (₹)" value={f.salary} onChangeText={set("salary")} keyboardType="number-pad" />
+      <Text style={s.label}>Off days</Text>
+      <Choice multi options={DAYS} value={offDays}
+        onChange={(d) => setOffDays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]))} />
+      <Text style={s.h3}>Kitchen</Text>
+      <Field label="Approve carts above (₹)" value={f.limit} onChangeText={set("limit")} keyboardType="number-pad" />
+      <Text style={s.label}>Goal</Text>
+      <Choice options={["lose", "maintain", "gain"] as const} value={goal} onChange={setGoal} />
+      <Text style={s.label}>Diet</Text>
+      <Choice options={["veg", "egg", "non-veg"] as const} value={diet} onChange={setDiet} />
+      <Field label="Protein target (g/day, optional)" value={f.protein} onChangeText={set("protein")} keyboardType="number-pad" />
+      {error && <Text style={s.error}>{error}</Text>}
+      <Pressable style={[s.bigBtn, (!ready || busy) && s.disabled]} disabled={!ready || busy} onPress={submit}>
+        <Text style={s.bigBtnText}>{busy ? "…" : "Sign up"}</Text>
+      </Pressable>
+      <Pressable onPress={() => onDone(DEMO_HOUSEHOLD)}><Text style={[s.link, s.centerText]}>Use the demo household</Text></Pressable>
+    </ScrollView>
+  );
+}
+
+function Join({ onJoin }: { onJoin: (householdId: string) => void }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const join = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      // ponytail: response shape guessed from the brief; POST /join isn't on any branch yet.
+      const r = await postJson<{ id?: string; householdId?: string; household?: { id: string } }>("/join", { code: code.trim().toUpperCase() });
+      const id = r.householdId ?? r.household?.id ?? r.id;
+      if (!id) throw new Error(`Unexpected response: ${JSON.stringify(r)}`);
+      onJoin(id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={s.center}>
+      <Text style={s.h2}>मालिक से मिला कोड डालें</Text>
+      <TextInput style={[s.input, s.codeInput]} value={code} onChangeText={setCode} maxLength={6}
+        autoCapitalize="characters" autoCorrect={false} placeholder="ABC123" />
+      {error && <Text style={[s.error, s.centerText]}>{error}</Text>}
+      <Pressable style={[s.bigBtn, (code.trim().length !== 6 || busy) && s.disabled]} disabled={code.trim().length !== 6 || busy} onPress={join}>
+        <Text style={s.bigBtnText}>{busy ? "…" : "जुड़ें"}</Text>
+      </Pressable>
+      <Pressable onPress={() => onJoin(DEMO_HOUSEHOLD)}><Text style={[s.link, s.centerText]}>डेमो घर इस्तेमाल करें</Text></Pressable>
+    </View>
+  );
+}
+
 // ---- Cook: hold to record, or type; both go to POST /calls --------------------
 
-function Cook() {
+function Cook({ householdId }: { householdId: string }) {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY); // .m4a (AAC) on iOS and Android
   const [recording, setRecording] = useState(false);
   const [text, setText] = useState("");
@@ -76,7 +220,7 @@ function Cook() {
     setError(null);
     setSent(null);
     try {
-      const call = await api<CallResult>(`/calls?householdId=${HOUSEHOLD}`, { method: "POST", ...init });
+      const call = await api<CallResult>(`/calls?householdId=${householdId}`, { method: "POST", ...init });
       setSent(call.transcript.text);
     } catch (e) {
       setError((e as Error).message);
@@ -126,7 +270,7 @@ function Cook() {
       <View style={s.row}>
         <TextInput style={s.input} placeholder="या यहाँ लिखें…" value={text} onChangeText={setText} editable={!busy} />
         <Pressable style={[s.btn, (busy || !text.trim()) && s.disabled]} disabled={busy || !text.trim()} onPress={() => {
-          void send({ headers: { "content-type": "application/json" }, body: JSON.stringify({ householdId: HOUSEHOLD, transcript: text.trim() }) });
+          void send({ headers: { "content-type": "application/json" }, body: JSON.stringify({ householdId, transcript: text.trim() }) });
           setText("");
         }}>
           <Text style={s.btnText}>भेजें</Text>
@@ -146,7 +290,7 @@ function Cook() {
 
 // ---- Owner: poll the calls and act on cards ---------------------------------
 
-function Owner() {
+function Owner({ householdId }: { householdId: string }) {
   const [calls, setCalls] = useState<Call[]>([]); // newest first, as the server returns them
   const [errors, setErrors] = useState<Record<string, string>>({}); // card id (or "feed") → message
   const [busy, setBusy] = useState<string | null>(null);
@@ -156,7 +300,7 @@ function Owner() {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      setCalls(await api<Call[]>(`/calls?householdId=${HOUSEHOLD}`));
+      setCalls(await api<Call[]>(`/calls?householdId=${householdId}`));
       setErrors(({ feed: _, ...rest }) => rest);
     } catch (e) {
       setErrors((m) => ({ ...m, feed: `Can't reach ${API}: ${(e as Error).message}` }));
@@ -315,4 +459,14 @@ const s = StyleSheet.create({
   ok: { color: accent, fontWeight: "700", fontSize: 18 },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
   error: { color: "#b3261e", marginTop: 6 },
+  form: { padding: 16, paddingBottom: 60, gap: 10 },
+  field: { gap: 4 },
+  label: { color: "#55524b", fontSize: 13, fontWeight: "600" },
+  seg: { borderWidth: 1, borderColor: "#d8d3c7", borderRadius: 99, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: "#fff" },
+  segOn: { backgroundColor: accent, borderColor: accent },
+  segText: { fontSize: 14, color: "#333" },
+  segTextOn: { color: "#fff", fontWeight: "600" },
+  link: { color: accent, fontWeight: "600", padding: 8 },
+  code: { fontSize: 56, fontWeight: "800", letterSpacing: 8, textAlign: "center", fontVariant: ["tabular-nums"] },
+  codeInput: { flex: 0, fontSize: 28, letterSpacing: 6, textAlign: "center" },
 });
