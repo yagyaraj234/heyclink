@@ -36,7 +36,7 @@ test("processCall: cook note → gold extraction, household context to both port
     groceries: [
       { raw: "atta ... wahi wala do kilo", itemWord: "atta", qtyPhrase: "do kilo", item: "atta", qty: 2, unit: "kg", brand: "aashirvaad", confidence: 1 },
       { raw: "do gaddi dhaniya", itemWord: "dhaniya", qtyPhrase: "do gaddi", item: "coriander", qty: 2, unit: "bunch", brand: null, confidence: 1 },
-      { raw: "ek packet Amul doodh", itemWord: "doodh", qtyPhrase: "ek packet", item: "milk", qty: 1, unit: "packet", brand: "amul", confidence: 1 },
+      { raw: "ek packet Amul doodh", itemWord: "doodh", qtyPhrase: "ek packet", item: "milk", qty: 1, unit: "packet", brand: "Amul", confidence: 1 },
     ],
     advance: { amount: 500, reason: null },
     notes: ["kal 8 baje aaungi"],
@@ -82,4 +82,5 @@ test("processCall with harness off (eval baseline): no household context reaches
 
   assert.doesNotMatch(calls[0]!.user, /aashirvaad|india-gate|diabetic/);
   assert.deepEqual(sttCalls[0]!.keywords, []);
+  assert.doesNotMatch(calls[0]!.system, /dedh|gaddi/); // qty rules are harness too
 });

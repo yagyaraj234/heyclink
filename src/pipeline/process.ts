@@ -59,10 +59,12 @@ export const EXTRACTION_SCHEMA = {
 
 const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telugu) into a grocery order for their employer.
 - One grocery line per item requested. "item" must be one of the allowed ids.
-- qty/unit: convert spoken quantities (paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen).
+- qty/unit: the spoken quantity as a number and unit.
 - brand: only when said, or when the cook means the usual one ("wahi wala", "same as last time", "jo hamesha aata hai") — then use the household's preferred brand for that item. Otherwise null.
 - advance: money the cook asks for themselves (salary advance), in INR. null if none.
 - notes: anything else worth telling the employer that is not a purchase, verbatim and short (e.g. "kal 8 baje aaungi"). Mentions that something is running low without asking to buy it go in notes, not groceries.`;
+
+const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen.";
 
 function householdContext(h: Household) {
   return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history, dietRules: h.family.dietRules });
@@ -84,7 +86,7 @@ function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
     unit: q?.unit ?? l.unit,
     confidence: l.confidence,
   };
-  if (l.brand) line.brand = l.brand;
+  if (l.brand) line.brand = l.brand.trim().toLowerCase().replace(/\s+/g, "-");
   return [line];
 }
 
@@ -96,7 +98,7 @@ export interface PipelineOptions {
 export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true }: PipelineOptions = {}): Promise<Extraction> {
   const context = harness ? `Household: ${householdContext(household)}\n` : "";
   const out = await ports.llm.json<LlmExtraction>({
-    system: SYSTEM,
+    system: harness ? SYSTEM + HARNESS_RULES : SYSTEM,
     user: `${context}Language hint: ${lang}\nVoice note: ${text}`,
     schema: EXTRACTION_SCHEMA,
     schemaName: "extraction",
