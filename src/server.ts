@@ -26,8 +26,11 @@ const store = openStore(join(dataDir, "vfi.db"));
 const swiggy = mockSwiggy; // ponytail: mock orders until the Instamart spike is go
 setInterval(() => void runDue(new Date(), store, swiggy).catch(console.error), 60_000);
 
+const origin = process.env.INSTAMART_PUBLIC_ORIGIN;
+const clientId = process.env.INSTAMART_CLIENT_ID;
+const instamart = origin ? { origin, clientId, staging: process.env.INSTAMART_STAGING === "1" } : undefined;
 const port = Number(process.env.PORT ?? 3000);
 const corsOrigin = process.env.CORS_ORIGIN || "*";
-createApp({ processCall, stt, llm: openaiLlm(llmModel), corsOrigin, health: { stt: provider, llm: llmModel }, store, swiggy }).listen(port, () =>
+createApp({ processCall, stt, llm: openaiLlm(llmModel), corsOrigin, health: { stt: provider, llm: llmModel }, store, swiggy, instamart }).listen(port, () =>
   console.log(`voice-for-india on :${port} (stt=${provider}, llm=${llmModel}, cors=${corsOrigin})`),
 );

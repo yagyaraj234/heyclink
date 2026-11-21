@@ -1,3 +1,5 @@
+import { instamartRouter } from "./actions/instamart.ts";
+import type { InstamartConfig } from "./actions/instamart.ts";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
@@ -29,6 +31,7 @@ export interface AppDeps {
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
   health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
   store?: Store; // default: a fresh in-memory database
+  instamart?: InstamartConfig;
   swiggy?: Swiggy; // places approved orders; default: labelled mock orders
 }
 
@@ -76,7 +79,7 @@ function parseSignup(body: unknown): Signup | string {
   };
 }
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy, instamart }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
   const withStatus = ({ call, entries }: StoredCall) => ({ ...call, status: Object.fromEntries(entries.map((e) => [e.card.id, statusOf(e)])) });
@@ -86,7 +89,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.set({
       "access-control-allow-origin": corsOrigin,
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-headers": "content-type, authorization",
       vary: "origin",
     });
     if (req.method === "OPTIONS") return void res.sendStatus(204);
@@ -95,6 +98,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   app.use(express.json());
   app.use(express.raw({ type: "audio/*", limit: "25mb" }));
 
+  if (instamart) app.use(instamartRouter(instamart, store));
   app.get("/health", (_req, res) => void res.json({ ok: true, stt: health.stt, llm: health.llm }));
 
   app.post("/calls", async (req, res) => {
@@ -282,7 +286,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     let cookCode: string;
     do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
     while (!store.addHousehold(household, cookCode, ownerToken));
-    res.set("cache-control", "no-store").status(201).json({ id, cookCode, ownerToken, instamartAvailable: false });
+    res.set("cache-control", "no-store").status(201).json({ id, cookCode, ownerToken, instamartAvailable: !!instamart });
   });
 
   app.post("/join", (req, res) => {
