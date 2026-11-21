@@ -1474,3 +1474,18 @@ test("changed retailer bill invalidates the old owner receipt and fences overlap
   assert.equal((await flow.order(latest.receiptId)).status, 409);
   assert.equal(flow.writes(), 1);
 });
+
+test("an unrelated item going out of stock or undeliverable does not block the Instamart receipt", async (t) => {
+  const flow = await retailerScenario(t, "adjusted");
+  assert.equal(flow.prepare.status, 200);
+  const soap = flow.product("soap", 1, "Family bar");
+  flow.set([flow.product("onion", 2, "400 g"), flow.stock[1]!, { ...soap, isInStockAndAvailable: false }, flow.stock[3]!]);
+  flow.setUnavailable([soap]);
+  const review = await flow.reopen();
+  assert.equal(review.status, 200);
+  assert.match(review.html, /soap is unavailable/);
+  assert.equal((await review.proceed()).status, 303);
+  assert.deepEqual((await flow.receipt()).lines, [
+    { item: "onion", qty: 400, unit: "g", pack: { size: 400, unit: "g", count: 1 }, price: 20 },
+  ]);
+});
