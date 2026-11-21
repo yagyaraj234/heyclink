@@ -1591,3 +1591,19 @@ test("an unrelated item going out of stock or undeliverable does not block the I
     { item: "onion", qty: 400, unit: "g", pack: { size: 400, unit: "g", count: 1 }, price: 20 },
   ]);
 });
+
+test("approving a cart teaches the household its brands; a brand the catalog doesn't sell for that item is not learned", async (t) => {
+  const llm = llmReplying({ groceries: [
+    { raw: "ek packet tata chai", item: "tea", qty: 250, unit: "g", brand: "tata", confidence: 1 },
+    { raw: "do kilo atta local wala", item: "atta", qty: 2, unit: "kg", brand: "local-chakki", confidence: 1 },
+  ], notes: [] });
+  const { base, post, close } = await serve(fakeStt(), { llm });
+  t.after(close);
+
+  const call = (await (await post("/calls", { transcript: "chai aur atta", householdId: "h1" })).json()) as CallResult;
+  assert.equal((await post(`/actions/${call.actions[0]!.id}/approve`)).status, 200);
+
+  const h = (await (await fetch(`${base}/households/h1`)).json()) as Household;
+  assert.equal(h.brands.tea, "tata");
+  assert.equal(h.brands.atta, "aashirvaad");
+});
