@@ -322,3 +322,22 @@ test("processCall: harness keeps a spoken brand the LLM dropped or misspelled (�
 
   assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["detergent-powder", "henko"], ["detergent-powder", "henko"]]);
 });
+
+test("processCall: an unknown product whose name contains a catalog word is not forced onto it (chizzpa chips ≠ cheese)", async () => {
+  const { stt } = fakeStt("मैं पाँच कार्टन चीज़ जपा पोटैटो क्रिप्स चिप्स ... जोड़ना चाहता हूँ", "hi");
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "पाँच कार्टन चीज़ जपा पोटैटो क्रिप्स चिप्स", requested: true, itemWord: "चीज़ जपा पोटैटो क्रिप्स चिप्स", qtyPhrase: "पाँच कार्टन", item: null, qty: 5, unit: "packet", brand: "chizzpa", confidence: 0.8 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries, []);
+  // live (eval hi-08eeb3eb) the model split off "चीज़" as its own cheese line; the schema must say not to
+  const item = JSON.stringify(calls[0]!.schema);
+  assert.match(item, /contains a catalog word/);
+  assert.match(item, /never split one product/);
+});

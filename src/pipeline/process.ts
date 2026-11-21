@@ -42,7 +42,7 @@ export const EXTRACTION_SCHEMA = {
           },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
-          item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the item is not in the catalog" },
+          item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the product is not in the catalog. A product whose name merely contains a catalog word is not that item: 'cheez-pa potato chips', 'kaju katli', 'chocolate ice cream' → null; never split one product name into several lines" },
           qty: { type: "number" },
           unit: { type: "string", enum: UNITS },
           brand: { ...nullable("string"), description: "lowercase kebab-case brand id, e.g. 'aashirvaad', 'india-gate'" },
