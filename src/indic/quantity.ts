@@ -1,7 +1,7 @@
 import type { Unit } from "../contracts.ts";
 
 const unitAliases: Record<Unit, string> = {
-  kg: "kg kilo kilogram kilos kilograms किलो किलोग्राम",
+  kg: "kg kilo kilogram kilos kilograms किलो किलोग्राम కిలో",
   g: "g gram grams gm ग्राम",
   l: "l litre liter litres liters लीटर लिटर",
   ml: "ml milliliter millilitre मिलीलीटर एमएल",
@@ -22,51 +22,68 @@ const numberWords = [
   "gyarah gyaarah ग्यारह", "barah baarah बारह", "terah तेरह", "chaudah चौदह",
   "pandrah पंद्रह पन्द्रह", "solah सोलह", "satrah सत्रह", "atharah अठारह",
   "unnees unnis उन्नीस", "bees bis बीस",
+  "ikkees ikkis इक्कीस", "baais bais बाईस", "teis तेईस", "chaubees chaubis चौबीस",
+  "pachchis pachchees पच्चीस", "chhabbees छब्बीस", "sattais सत्ताईस", "atthais अट्ठाईस",
+  "untees untis उनतीस", "tees tis तीस",
+  "iktees इकतीस", "battees बत्तीस", "taintees teentees तैंतीस", "chauntees चौंतीस",
+  "paintees पैंतीस", "chhattees छत्तीस", "saintees सैंतीस", "adtees अड़तीस",
+  "untalees उनतालीस", "chalees chalis चालीस",
+  "iktalees इकतालीस", "bayalees बयालीस", "taintalees तैंतालीस", "chauvalees चवालीस चौवालीस",
+  "paintalees पैंतालीस", "chhiyalees छियालीस", "saintalees सैंतालीस", "adtalees अड़तालीस",
+  "unchaas उनचास", "pachaas pachas पचास",
+  "ikyavan इक्यावन", "bavan baavan बावन", "tirpan तिरपन", "chauvan चौवन",
+  "pachpan पचपन", "chhappan छप्पन", "sattavan सत्तावन", "atthavan अट्ठावन",
+  "unsath उनसठ", "saath साठ",
+  "iksath इकसठ", "baasath बासठ", "tirsath तिरसठ", "chaunsath चौंसठ",
+  "painsath पैंसठ", "chhiyasath छियासठ", "sadsath सड़सठ", "adsath अड़सठ",
+  "unhattar उनहत्तर", "sattar सत्तर",
+  "ikhattar इकहत्तर", "bahattar बहत्तर", "tihattar तिहत्तर", "chauhattar चौहत्तर",
+  "pachhattar पचहत्तर", "chhihattar छिहत्तर", "sathattar सतहत्तर", "athhattar अठहत्तर",
+  "unasi उनासी", "assi अस्सी",
+  "ikyasi इक्यासी", "bayasi बयासी", "tirasi तिरासी", "chaurasi चौरासी",
+  "pachasi पचासी", "chhiyasi छियासी", "sattasi सत्तासी", "atthasi अट्ठासी",
+  "navasi नवासी", "nabbe नब्बे",
+  "ikyanve इक्यानवे", "baanve बानवे", "tiranve तिरानवे", "chauranve चौरानवे",
+  "pachanve पचानवे", "chhiyanve छियानवे", "sattanve सत्तानवे", "atthanve अट्ठानवे",
+  "ninyaanve ninyanve निन्यानवे",
 ];
 const numbers = new Map<string, number>();
 for (const [index, words] of numberWords.entries()) {
   for (const word of words.split(" ")) numbers.set(word, index + 1);
 }
-numbers.set("pachaas", 50);
-numbers.set("pachas", 50);
-numbers.set("पचास", 50);
 
 const scales = [
-  [1000, /^(?:(\S+) )?(?:hazaar|hazar|हज़ार|हजार)(?: (.+))?$/u],
-  [100, /^(?:(\S+) )?(?:sau|सौ)(?: (.+))?$/u],
+  [1000, /^(?:(.+?) )?(?:hazaar|hazar|हज़ार|हजार)(?: (.+))?$/u],
+  [100, /^(?:(.+?) )?(?:sau|सौ)(?: (.+))?$/u],
 ] as const;
 
 const fractions = new Map([
   ["paav", 0.25], ["pav", 0.25], ["पाव", 0.25],
   ["aadha", 0.5], ["adha", 0.5], ["आधा", 0.5],
+  ["aadhi", 0.5], ["adhi", 0.5], ["आधी", 0.5],
   ["dedh", 1.5], ["डेढ़", 1.5],
   ["dhai", 2.5], ["dhaai", 2.5], ["ढाई", 2.5],
+  ["paavu", 0.25], ["పావు", 0.25],
+  ["aara", 0.5], ["ara", 0.5], ["అర", 0.5],
+  ["సున్నాపాయింట్ ఐదు", 0.5], ["సున్నా పాయింట్ ఐదు", 0.5],
 ]);
 const offsets = new Map([
-  ["saade", 0.5], ["sadhe", 0.5], ["साढ़े", 0.5],
+  ["saade", 0.5], ["sade", 0.5], ["sadhe", 0.5], ["साढ़े", 0.5],
   ["sava", 0.25], ["sawa", 0.25], ["सवा", 0.25],
   ["paune", -0.25], ["pone", -0.25], ["पौने", -0.25],
 ]);
 
 function parseNumber(raw: string): number {
   if (/^\d+(?:\.\d+)?$/u.test(raw)) return Number(raw);
-  for (const [scale, pattern] of scales) {
-    const match = pattern.exec(raw);
-    if (!match) continue;
-
-    const count = match[1] === undefined ? 1 : parseNumber(match[1]);
-    const remainder = match[2] === undefined ? 0 : parseNumber(match[2]);
-    if (!Number.isInteger(count) || count < 1 || count >= 100 || !(remainder < scale)) {
-      return NaN;
-    }
-    return count * scale + remainder;
-  }
   return numbers.get(raw) ?? NaN;
 }
 
-function parseQuantity(raw: string): number {
+function parseUnscaled(raw: string, impliedBase = NaN): number {
   const fraction = fractions.get(raw);
   if (fraction !== undefined) return fraction;
+
+  const standaloneOffset = offsets.get(raw);
+  if (standaloneOffset !== undefined) return impliedBase + standaloneOffset;
 
   const offset = /^(\S+) (.+)$/u.exec(raw);
   if (offset?.[1] && offset[2]) {
@@ -76,9 +93,25 @@ function parseQuantity(raw: string): number {
   return parseNumber(raw);
 }
 
+function parseQuantity(raw: string, maxScale = Infinity): number {
+  for (const [scale, pattern] of scales) {
+    if (scale >= maxScale) continue;
+    const match = pattern.exec(raw);
+    if (!match) continue;
+
+    const count = match[1] === undefined ? 1 : parseUnscaled(match[1], 1);
+    const remainder = match[2] === undefined ? 0 : parseQuantity(match[2], scale);
+    if (!(count > 0 && count < 100 && remainder >= 0 && remainder < scale)) return NaN;
+    return count * scale + remainder;
+  }
+  return parseUnscaled(raw);
+}
+
 export function normalizeQuantity(raw: string): { qty: number; unit: Unit } | null {
   const text = raw.normalize().trim().toLowerCase().replace(/\s+/gu, " ")
-    .replace(/[०-९]/gu, (digit) => String(digit.charCodeAt(0) - 0x0966));
+    .replace(/[०-९]/gu, (digit) => String(digit.charCodeAt(0) - 0x0966))
+    .replace(/[౦-౯]/gu, (digit) => String(digit.charCodeAt(0) - 0x0c66))
+    .replace(/^(అర|పావు)కిలో$/u, "$1 కిలో");
   const match = /^(.+?)(?: |(?<=\d))([\p{L}\p{M}]+)$/u.exec(text);
   if (!match?.[1] || !match[2]) return null;
 

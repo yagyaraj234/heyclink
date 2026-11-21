@@ -51,6 +51,42 @@ const cases: [string, number, Unit][] = [
   ["सवा तीन लीटर", 3.25, "l"],
   ["paune 2 kilo", 1.75, "kg"],
   ["पौने एक किलो", 0.75, "kg"],
+  ["ikkees packet", 21, "packet"],
+  ["पच्चीस ग्राम", 25, "g"],
+  ["उनतीस नग", 29, "piece"],
+  ["teentees ग्राम", 33, "g"],
+  ["चालीस ग्राम", 40, "g"],
+  ["paintalees ml", 45, "ml"],
+  ["बावन g", 52, "g"],
+  ["chhappan gram", 56, "g"],
+  ["saath gram", 60, "g"],
+  ["छियासठ ग्राम", 66, "g"],
+  ["bahattar g", 72, "g"],
+  ["पचहत्तर ग्राम", 75, "g"],
+  ["assi ml", 80, "ml"],
+  ["अट्ठासी ग्राम", 88, "g"],
+  ["nabbe gram", 90, "g"],
+  ["निन्यानवे ग्राम", 99, "g"],
+  ["teen hazar do sau pachchis gram", 3225, "g"],
+  ["dedh sau gram", 150, "g"],
+  ["सवा सौ ग्राम", 125, "g"],
+  ["paune sau ml", 75, "ml"],
+  ["साढ़े तीन सौ ग्राम", 350, "g"],
+  ["ढाई हज़ार ग्राम", 2500, "g"],
+  ["sava 100 g", 100.25, "g"],
+  ["aadhi gaddi", 0.5, "bunch"],
+  ["आधी गड्डी", 0.5, "bunch"],
+  ["sade char kilo", 4.5, "kg"],
+  ["aara kilo", 0.5, "kg"],
+  ["paavu kilo", 0.25, "kg"],
+  ["అర కిలో", 0.5, "kg"],
+  ["పావు కిలో", 0.25, "kg"],
+  ["అరకిలో", 0.5, "kg"],
+  ["పావుకిలో", 0.25, "kg"],
+  ["౨ కిలో", 2, "kg"],
+  // Clean qtyPhrase from the Telugu IndicVoices Bigbasket fixture.
+  ["సున్నాపాయింట్ ఐదు కిలో", 0.5, "kg"],
+  ["సున్నా పాయింట్ ఐదు కిలో", 0.5, "kg"],
 ];
 
 for (const [raw, qty, unit] of cases) {
@@ -59,7 +95,7 @@ for (const [raw, qty, unit] of cases) {
   });
 }
 
-for (const raw of ["", "kilo", "dedh", "0 kg", "-2 kg", "1e3 g", "two bags", "do kilo pyaaz", "saade kilo", "do sau teen sau gram", "sava aadha kilo"]) {
+for (const raw of ["", "kilo", "dedh", "0 kg", "-2 kg", "1e3 g", "two bags", "do kilo pyaaz", "saade kilo", "do sau teen sau gram", "sava aadha kilo", "do sau paune 0 gram"]) {
   test(`normalizeQuantity rejects ${JSON.stringify(raw)}`, () => {
     assert.equal(normalizeQuantity(raw), null);
   });
