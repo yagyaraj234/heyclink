@@ -153,3 +153,65 @@ test("processCall with real STT adapters: browser webm uploads are sent as audio
 
   assert.deepEqual(uploads.map((u) => [u.type, u.name]), [["audio/webm", "note.webm"], ["audio/webm", "note.webm"]]);
 });
+
+test("processCall: brand spoken as the item (Tata Tea, Surf Excel, Vim bar, Amul doodh) → generic item + brand id", async () => {
+  const { stt } = fakeStt("Didi, aadha kilo Tata Tea, ek packet Surf Excel, do Vim bar, aur do packet Amul doodh.", "hi");
+  // slips seen as "dropped or wrong": brand read as an out-of-catalog item, brand missing, brand slug keeps the product word
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "aadha kilo Tata Tea", itemWord: "Tata Tea", qtyPhrase: "aadha kilo", item: null, qty: 0.5, unit: "kg", brand: "Tata Tea", confidence: 0.9 },
+      { raw: "ek packet Surf Excel", itemWord: "Surf Excel", qtyPhrase: "ek packet", item: "detergent-powder", qty: 1, unit: "packet", brand: null, confidence: 0.9 },
+      { raw: "do Vim bar", itemWord: "Vim bar", qtyPhrase: "do", item: "dishwash-bar", qty: 2, unit: "piece", brand: "vim-bar", confidence: 0.9 },
+      { raw: "do packet Amul doodh", itemWord: "Amul doodh", qtyPhrase: "do packet", item: null, qty: 2, unit: "packet", brand: null, confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(
+    res.extraction.groceries.map((g) => [g.item, g.brand]),
+    [["tea", "tata"], ["detergent-powder", "surf-excel"], ["dishwash-bar", "vim"], ["milk", "amul"]],
+  );
+});
+
+test("processCall: no brand said → cart uses the household's preferred brand, extraction stays brandless", async () => {
+  const { stt } = fakeStt("do litre doodh aur ek kilo dahi", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "do litre doodh", itemWord: "doodh", qtyPhrase: "do litre", item: "milk", qty: 2, unit: "l", brand: null, confidence: 1 },
+      { raw: "ek kilo dahi", itemWord: "dahi", qtyPhrase: "ek kilo", item: "curd", qty: 1, unit: "kg", brand: null, confidence: 1 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => g.brand), [undefined, undefined]);
+  const cart = res.actions[0]!;
+  assert.ok(cart.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => [l.item, l.brand]), [["milk", "amul"], ["curd", undefined]]);
+});
+
+test("processCall: kishmish / kismis / किशमिश all land on raisins, and the LLM is told so", async () => {
+  const { stt } = fakeStt("sau gram kishmish, sau gram kismis, sau gram किशमिश", "hi");
+  // run-to-run drift: the model sometimes picks grapes or gives up on the dried fruit
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "sau gram kishmish", itemWord: "kishmish", qtyPhrase: "sau gram", item: "grapes", qty: 100, unit: "g", brand: null, confidence: 0.9 },
+      { raw: "sau gram kismis", itemWord: "kismis", qtyPhrase: "sau gram", item: null, qty: 100, unit: "g", brand: null, confidence: 0.9 },
+      { raw: "sau gram किशमिश", itemWord: "किशमिश", qtyPhrase: "sau gram", item: "grapes", qty: 100, unit: "g", brand: null, confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => g.item), ["raisins", "raisins", "raisins"]);
+  const told = calls[0]!.system + JSON.stringify(calls[0]!.schema);
+  for (const spoken of ["kishmish", "kismis", "किशमिश", "किसमिस"]) assert.ok(told.includes(spoken), spoken);
+  assert.match(told, /raisins/);
+});

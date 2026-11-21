@@ -66,7 +66,9 @@ const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telug
 - advance: money the cook asks for themselves (salary advance), in INR. null if none.
 - notes: anything else worth telling the employer that is not a purchase, verbatim and short (e.g. "kal 8 baje aaungi"). Mentions that something is running low without asking to buy it go in notes, not groceries.`;
 
-const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen.";
+const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen." +
+  "\n- item is the generic product, never null for a branded catalog item: Tata Tea→tea, Surf Excel→detergent-powder, Vim bar→dishwash-bar, Amul doodh→milk; brand is the brand alone (tata, surf-excel, vim, amul)." +
+  "\n- Spelling variants are one id: kishmish/kismis/किशमिश/किसमिस→raisins.";
 
 function householdContext(h: Household) {
   return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history, dietRules: h.family.dietRules });
@@ -78,9 +80,34 @@ export function sttKeywords(h: Household): string[] {
   return [...new Set([...[...Object.values(h.brands), ...items].map((w) => w.replaceAll("-", " ")), ...STT_KEYWORDS])];
 }
 
+// spoken brand word → brand id (ids from eval/recording-script.md).
+// ponytail: closed list, grow it from eval misses; a brand not listed passes through as the LLM's slug.
+const BRANDS: Record<string, string> = {
+  aashirvaad: "aashirvaad", amul: "amul", britannia: "britannia", fortune: "fortune", "india gate": "india-gate",
+  surf: "surf-excel", tata: "tata", vim: "vim",
+  आशीर्वाद: "aashirvaad", अमूल: "amul", ब्रिटानिया: "britannia", फॉर्च्यून: "fortune", "इंडिया गेट": "india-gate",
+  सर्फ: "surf-excel", टाटा: "tata", विम: "vim",
+};
+
+function spokenBrand(text: string): string | undefined {
+  const t = ` ${text.normalize().toLowerCase().replace(/़/g, "").replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim()} `;
+  return Object.entries(BRANDS).find(([w]) => t.includes(` ${w} `))?.[1];
+}
+
+/** "Tata Tea" → tea, "Amul doodh" → milk: Hindi noun phrases end in the item, so try ever-shorter tails. */
+function resolveTail(itemWord: string): string | null {
+  const w = itemWord.trim().split(/\s+/);
+  for (let i = 1; i < w.length; i++) {
+    const id = resolveItem(w.slice(i).join(" "));
+    if (id) return id;
+  }
+  return null;
+}
+
 function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
-  const item = (harness ? resolveItem(l.itemWord) : null) ?? l.item;
+  const item = harness ? (resolveItem(l.itemWord) ?? l.item ?? resolveTail(l.itemWord)) : l.item;
   if (!item || !(ITEMS as string[]).includes(item)) return [];
+  const brand = harness ? (l.brand ? (spokenBrand(l.brand) ?? l.brand) : spokenBrand(l.itemWord)) : l.brand;
   const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
   const line: GroceryLine = {
     raw: l.raw,
@@ -89,7 +116,7 @@ function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
     unit: q?.unit ?? l.unit,
     confidence: l.confidence,
   };
-  if (l.brand) line.brand = l.brand.trim().toLowerCase().replace(/\s+/g, "-");
+  if (brand) line.brand = brand.trim().toLowerCase().replace(/\s+/g, "-");
   return [line];
 }
 
