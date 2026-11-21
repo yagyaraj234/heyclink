@@ -442,3 +442,20 @@ test("processCall: an ambiguous word the household history doesn't settle comes 
   assert.deepEqual(res.extraction.groceries, []);
   assert.deepEqual(res.extraction.ambiguous, [{ raw: "do kilo चना", qty: 2, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] }]);
 });
+
+test("processCall: 'woh daal' resolves from a recent call's line, and recent notes reach the LLM", async () => {
+  const { stt } = fakeStt("woh daal ek kilo aur le aana", "hi");
+  const { llm, calls } = fakeLlm({
+    groceries: [{ raw: "woh daal ek kilo", requested: true, itemWord: "daal", qtyPhrase: "ek kilo", item: null, candidates: ["toor-dal", "moong-dal", "masoor-dal"], qty: 1, unit: "kg", brand: null, confidence: 0.6 }],
+    advance: null,
+    notes: [],
+  });
+  const recent = [{ at: "2026-11-21T08:10:00+05:30", transcript: "aadha kilo moong daal le aana", lines: [{ item: "moong-dal", qty: 0.5, unit: "kg" as const }] }];
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm }, { recent });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit]), [["moong-dal", 1, "kg"]]);
+  assert.match(calls[0]!.user, /recentNotes/);
+  assert.match(calls[0]!.user, /aadha kilo moong daal le aana/);
+  assert.match(calls[0]!.system, /recentNotes/);
+});
