@@ -18,6 +18,7 @@ export interface AppDeps {
   llm: Llm;
   corsOrigin?: string; // default "*": the API has no cookies or auth
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
+  health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
 }
 
 // STT providers sniff format from the file extension. The header is client input: anything but a plain token → "bin".
@@ -28,7 +29,7 @@ const extFor = (contentType = "") => {
   return /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 };
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist") }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" } }: AppDeps) {
   // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
   const calls = new Map<string, CallResult>();
@@ -55,6 +56,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   });
   app.use(express.json());
   app.use(express.raw({ type: "audio/*", limit: "25mb" }));
+
+  app.get("/health", (_req, res) => void res.json({ ok: true, stt: health.stt, llm: health.llm }));
 
   app.post("/calls", async (req, res) => {
     const isAudio = Buffer.isBuffer(req.body);

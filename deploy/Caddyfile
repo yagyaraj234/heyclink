@@ -3,5 +3,7 @@
 # HTTPS is required: browsers only allow mic access (getUserMedia) on secure origins.
 vfi.example.com {
 	encode gzip
-	reverse_proxy 127.0.0.1:3000
+	reverse_proxy 127.0.0.1:3000 {
+		health_uri /health
+	}
 }
