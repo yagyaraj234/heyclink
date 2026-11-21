@@ -1046,6 +1046,12 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   assert.match(choices, /Fresh onion/);
   assert.doesNotMatch(choices, /Wholesale onion|Commercial crate|Seasoning/);
   assert.equal((await form("/instamart/prepare", { csrf: "wrong", line0: "sku-o" }, cookie)).status, 403);
+  const rice = { ...existing, itemName: "Rice", skuId: "rice-sku", spinId: "rice-spin", itemVariant: "5 kg" };
+  cartItems = [rice];
+  const bulkBefore = await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie);
+  assert.equal(bulkBefore.status, 409);
+  assert.match(await bulkBefore.text(), /household limit/);
+  assert.equal(methods.includes("update_cart"), false);
   cartItems = [{ ...onion, quantity: 4 }];
   assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
   assert.equal(methods.filter((name) => name === "update_cart").length, 0);
@@ -1092,6 +1098,19 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   assert.equal(returning.headers.get("location"), "/instamart/prepared");
   const existingBill = await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } });
   assert.match(await existingBill.text(), /₹52/);
+  // Another device changes the retailer cart after preparation, without changing the app card.
+  cartItems = [onion, { ...rice, itemVariant: "1.5 kg" }, { ...rice, skuId: "rice-2", spinId: "rice-2", itemVariant: "1000 g" }];
+  const bulkBill = await form("/instamart/continue", { csrf }, cookie);
+  assert.equal(bulkBill.status, 409);
+  assert.match(await bulkBill.text(), /household limit/);
+  const bulkReopen = await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } });
+  assert.equal(bulkReopen.status, 409);
+  assert.equal(methods.filter(name => name === "update_cart").length, 1);
+  cartItems = [onion, { ...existing, skuId: "sack", spinId: "sack", itemName: "Family value sack", itemVariant: "1 piece" }];
+  const unknownPack = await form("/instamart/continue", { csrf }, cookie);
+  assert.equal(unknownPack.status, 409);
+  assert.match(await unknownPack.text(), /pack sizes/);
+  cartItems = [existing, onion];
   payable = "₹56";
   const changed = await form("/instamart/continue", { csrf }, cookie);
   assert.equal(changed.status, 409);
