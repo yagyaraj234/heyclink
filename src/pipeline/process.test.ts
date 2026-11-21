@@ -570,3 +570,12 @@ test('processCall schedules an explicit grocery deadline in household local time
   const result = await processCall({audioPath:'note',householdId:h.id}, h, {stt,llm}, {now:new Date('2026-11-21T10:00:00Z')});
   assert.equal((result.extraction as {neededBy?:string}).neededBy, '2026-11-21T12:30:00.000Z');
 });
+
+test('processCall asks the cook about an unclear quantity even when item recognition is confident', async () => {
+  const {stt} = fakeStt('two hand onions', 'en');
+  const {llm} = fakeLlm({ groceries:[{raw:'two hand onions',item:'onion',itemWord:'onions',qtyPhrase:'two hand',quantityUnclear:true,
+    qty:2,unit:'kg',confidence:0.95}],notes:[] });
+  const result = await processCall({audioPath:'note',householdId:h.id}, h, {stt,llm});
+  assert.deepEqual(result.actions.map(c => c.type), ['question']);
+  assert.deepEqual(result.extraction.groceries.map(l=>[l.qty,l.unit]), [[500,'g']]);
+});
