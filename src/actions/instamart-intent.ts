@@ -94,16 +94,16 @@ export function reconcile(intent: InstamartIntent | undefined, cart: RetailCart)
   if (remaining.size !== cart.items.length) throw mismatch();
   const lines: GroceryReceipt["lines"] = [];
   for (const actual of cart.items) {
-    if (cart.unserviceableItems?.some((u) => u.skuId === actual.skuId || u.spinId === actual.spinId)) throw mismatch();
     const i = remaining.get(actual.skuId);
+    if (!i || i.spinId !== actual.spinId || i.quantity !== actual.quantity || (!i.pack && i.variant !== actual.itemVariant))
+      throw mismatch();
+    // Stock and price only matter for packs this request added; the owner's other items can go out of stock.
     if (
-      !i ||
-      i.spinId !== actual.spinId ||
-      i.quantity !== actual.quantity ||
-      (!i.pack && i.variant !== actual.itemVariant) ||
-      !actual.isInStockAndAvailable ||
-      !Number.isFinite(actual.discountedFinalPrice) ||
-      actual.discountedFinalPrice < 0
+      i.added &&
+      (!actual.isInStockAndAvailable ||
+        cart.unserviceableItems?.some((u) => u.skuId === actual.skuId || u.spinId === actual.spinId) ||
+        !Number.isFinite(actual.discountedFinalPrice) ||
+        actual.discountedFinalPrice < 0)
     )
       throw mismatch();
     const pack = i.pack;
