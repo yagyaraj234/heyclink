@@ -69,6 +69,7 @@ const fractions = new Map([
   ["paav", 0.25], ["pav", 0.25], ["पाव", 0.25],
   ["aadha", 0.5], ["adha", 0.5], ["आधा", 0.5],
   ["aadhi", 0.5], ["adhi", 0.5], ["आधी", 0.5],
+  ["sava", 1.25], ["sawa", 1.25], ["सवा", 1.25],
   ["dedh", 1.5], ["डेढ़", 1.5],
   ["dhai", 2.5], ["dhaai", 2.5], ["ढाई", 2.5],
   ["paavu", 0.25], ["పావు", 0.25],
@@ -144,6 +145,8 @@ export function normalizeQuantity(raw: string): { qty: number; unit: Unit } | nu
   if (!match?.[1] || !match[2]) return null;
 
   const qty = parseQuantity(match[1]);
+  if (qty === 1 && /^(?:paa?v|पाव)$/u.test(match[2])) return { qty: 0.25, unit: "kg" };
+
   const unit = units.get(match[2]);
   return unit && Number.isFinite(qty) && qty > 0 ? { qty, unit } : null;
 }
