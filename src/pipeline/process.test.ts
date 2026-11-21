@@ -412,3 +412,23 @@ test("processCall: harness keeps the LLM's sub-brand slug instead of cutting it 
 
   assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["moong-dal", "tata-sampann"]]);
 });
+
+const chanaReply = (candidates: string[]) => ({
+  groceries: [{ raw: "do kilo चना", requested: true, itemWord: "चना", qtyPhrase: "do kilo", item: null, candidates, qty: 2, unit: "kg", brand: null, confidence: 0.6 }],
+  advance: null,
+  notes: [],
+});
+
+test("processCall: an ambiguous word with exactly one candidate in household history becomes that line (चना → kabuli-chana)", async () => {
+  const hh: Household = { ...h, history: [...h.history, { at: "2026-11-18", lines: [{ item: "kabuli-chana", qty: 1, unit: "kg" }] }] };
+  const { stt } = fakeStt("do kilo चना le aana", "hi");
+  const { llm, calls } = fakeLlm(chanaReply(["kabuli-chana", "kala-chana"]));
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, hh, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit]), [["kabuli-chana", 2, "kg"]]);
+  assert.equal(res.extraction.ambiguous, undefined);
+  const schema = JSON.stringify(calls[0]!.schema);
+  assert.match(schema, /"candidates"/);
+  assert.match(schema, /kabuli-chana, kala-chana/);
+});
