@@ -1,4 +1,5 @@
 import itemIds from "../../fixtures/items.json" with { type: "json" };
+import { normalizeAlias, resolveAlias } from "./alias-matching.ts";
 
 const aliases: Record<string, string> = {
   atta: "aata|आटा|गेहूं का आटा|गेहूँ का आटा|gehun ka atta|godhuma pindi|గోధుమ పిండి",
@@ -137,44 +138,16 @@ export const STT_KEYWORDS: string[] = [
   "jeera", "hing", "saunf", "sarson ka tel", "kishmish", "ashwagandha tablets",
 ];
 
-function normalize(raw: string): string {
-  return raw.normalize().toLowerCase().replace(/[\u093c\u200c\u200d]/gu, "")
-    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim();
-}
-
 const lexicon = new Map<string, string>();
 for (const id of itemIds) {
-  for (const alias of aliases[id]?.split("|") ?? []) lexicon.set(normalize(alias), id);
+  for (const alias of aliases[id]?.split("|") ?? []) lexicon.set(normalizeAlias(alias), id);
 }
 
-for (const id of itemIds) lexicon.set(normalize(id), id);
+for (const id of itemIds) lexicon.set(normalizeAlias(id), id);
 
 // One edit can turn these cleaner names into unrelated words such as "phenol" and "final".
 const exactOnly = new Set(["phenyl", "finail"]);
 
-function oneEditApart(shorter: string, longer: string): boolean {
-  if (shorter.length > longer.length) return oneEditApart(longer, shorter);
-  if (longer.length - shorter.length > 1) return false;
-
-  let index = 0;
-  while (index < shorter.length && shorter[index] === longer[index]) index++;
-  const skip = shorter.length === longer.length ? 1 : 0;
-  return shorter.slice(index + skip) === longer.slice(index + 1);
-}
-
 export function resolveItem(raw: string): string | null {
-  const key = normalize(raw);
-  const exact = lexicon.get(key);
-  if (exact) return exact;
-  if (key.length < 5) return null;
-
-  let match: string | null = null;
-  for (const [alias, id] of lexicon) {
-    // Keep the edges exact to avoid treating a distinct word like "makhana" as "makhan".
-    if (alias[0] !== key[0] || alias.at(-1) !== key.at(-1) || exactOnly.has(alias)) continue;
-    if (!oneEditApart(key, alias)) continue;
-    if (match !== null && match !== id) return null;
-    match = id;
-  }
-  return match;
+  return resolveAlias(raw, lexicon, exactOnly);
 }
