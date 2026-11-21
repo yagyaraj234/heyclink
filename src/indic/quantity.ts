@@ -1,14 +1,14 @@
 import type { Unit } from "../contracts.ts";
 
 const unitAliases: Record<Unit, string> = {
-  kg: "kg kilo kilogram kilos kilograms किलो किलोग्राम కిలో కేజీల",
-  g: "g gram grams gm ग्राम గ్రాముల",
-  l: "l litre liter litres liters लीटर लिटर",
-  ml: "ml milliliter millilitre मिलीलीटर एमएल",
-  packet: "packet pack packets packs पैकेट ప్యాకెట్ల ప్యాకెట్లు సంచులో",
-  piece: "piece pieces pc pcs nag नग पीस",
-  dozen: "dozen darjan दर्जन",
-  bunch: "bunch bunches gaddi गड्डी गड्डियां गड्डियाँ",
+  kg: "kg kilo kilogram kilos kilograms किलो किलोग्राम కిలో కిలోలు కిలోల కేజీ కేజీలు కేజీల",
+  g: "g gram grams gm ग्राम గ్రాము గ్రాములు గ్రాముల",
+  l: "l litre liter litres liters लीटर लिटर లీటర్ లీటరు లీటర్లు లీటర్ల",
+  ml: "ml milliliter millilitre मिलीलीटर एमएल మిల్లీ మిల్లీలీటర్ మిల్లీలీటరు మిల్లీలీటర్లు మిల్లీలీటర్ల ఎంఎల్",
+  packet: "packet pack packets packs पैकेट ప్యాకెట్ ప్యాకెట్ల ప్యాకెట్లు సంచులో",
+  piece: "piece pieces pc pcs nag नग पीस ముక్క ముక్కలు పీస్ పీసు పీసులు",
+  dozen: "dozen darjan दर्जन డజను డజన్ డజన్లు డజన్ల",
+  bunch: "bunch bunches gaddi गड्डी गड्डियां गड्डियाँ కట్ట కట్టలు కట్టల",
 };
 
 const units = new Map<string, Unit>();
@@ -17,11 +17,13 @@ for (const unit of Object.keys(unitAliases) as Unit[]) {
 }
 
 const numberWords = [
-  "ek एक", "do दो రెండు", "teen tin तीन మూడు", "char chaar चार", "panch paanch पांच पाँच ఐదు",
-  "chhe che chhah छह छः", "sat saat सात ఏడు", "aath ath आठ", "nau नौ", "das dus दस పది",
-  "gyarah gyaarah ग्यारह", "barah baarah बारह", "terah तेरह", "chaudah चौदह",
-  "pandrah पंद्रह पन्द्रह", "solah सोलह", "satrah सत्रह", "atharah अठारह",
-  "unnees unnis उन्नीस", "bees bis बीस",
+  "ek एक ఒక ఒకటి ఒక్క ఒక్కటి", "do दो రెండు", "teen tin तीन మూడు", "char chaar चार నాలుగు",
+  "panch paanch पांच पाँच ఐదు అయిదు", "chhe che chhah छह छः ఆరు", "sat saat सात ఏడు",
+  "aath ath आठ ఎనిమిది", "nau नौ తొమ్మిది", "das dus दस పది",
+  "gyarah gyaarah ग्यारह పదకొండు", "barah baarah बारह పన్నెండు", "terah तेरह పదమూడు",
+  "chaudah चौदह పద్నాలుగు పదునాలుగు", "pandrah पंद्रह पन्द्रह పదిహేను పదునయిదు",
+  "solah सोलह పదహారు", "satrah सत्रह పదిహేడు", "atharah अठारह పద్దెనిమిది",
+  "unnees unnis उन्नीस పంతొమ్మిది పందొమ్మిది", "bees bis बीस",
   "ikkees ikkis इक्कीस", "baais bais बाईस", "teis तेईस", "chaubees chaubis चौबीस",
   "pachchis pachchees पच्चीस", "chhabbees छब्बीस", "sattais सत्ताईस", "atthais अट्ठाईस",
   "untees untis उनतीस", "tees tis तीस",
@@ -52,9 +54,15 @@ for (const [index, words] of numberWords.entries()) {
   for (const word of words.split(" ")) numbers.set(word, index + 1);
 }
 
+const teluguTens = [
+  ["ఇరవై", 20], ["ముప్పై", 30], ["నలభై", 40], ["యాభై", 50], ["ఏభై", 50],
+  ["అరవై", 60], ["డెబ్బై", 70], ["ఎనభై", 80], ["తొంభై", 90],
+] as const;
+
 const scales = [
   [1000, /^(?:(.+?) )?(?:hazaar|hazar|हज़ार|हजार|వెయ్యి)(?: (.+))?$/u],
-  [100, /^(?:(.+?) )?(?:sau|सौ|వంద|వందల|వందలు)(?: (.+))?$/u],
+  [100, /^(?:(.+?) )?(?:sau|सौ|నూరు)(?: (.+))?$/u],
+  [100, /^(?:(.+?) ?)?వంద(?:లు?)?(?: ?(.+))?$/u],
 ] as const;
 
 const fractions = new Map([
@@ -65,6 +73,7 @@ const fractions = new Map([
   ["dhai", 2.5], ["dhaai", 2.5], ["ढाई", 2.5],
   ["paavu", 0.25], ["పావు", 0.25],
   ["aara", 0.5], ["ara", 0.5], ["అర", 0.5],
+  ["ముప్పావు", 0.75], ["ఒకటిన్నర", 1.5], ["రెండున్నర", 2.5],
   ["సున్నాపాయింట్ ఐదు", 0.5], ["సున్నా పాయింట్ ఐదు", 0.5],
 ]);
 const offsets = new Map([
@@ -75,7 +84,17 @@ const offsets = new Map([
 
 function parseNumber(raw: string): number {
   if (/^\d+(?:\.\d+)?$/u.test(raw)) return Number(raw);
-  return numbers.get(raw) ?? NaN;
+  const exact = numbers.get(raw);
+  if (exact !== undefined) return exact;
+
+  for (const [word, tens] of teluguTens) {
+    if (!raw.startsWith(word)) continue;
+    const suffix = raw.slice(word.length).trimStart();
+    if (!suffix) return tens;
+    const ones = /^\p{Script=Telugu}+$/u.test(suffix) ? numbers.get(suffix) : undefined;
+    return ones !== undefined && ones < 10 ? tens + ones : NaN;
+  }
+  return NaN;
 }
 
 function parseUnscaled(raw: string, impliedBase = NaN): number {
@@ -104,6 +123,12 @@ function parseQuantity(raw: string, maxScale = Infinity): number {
     if (!(count > 0 && count < 100 && remainder >= 0 && remainder < scale)) return NaN;
     return count * scale + remainder;
   }
+
+  if (maxScale > 100 && raw.startsWith("నూట")) {
+    if (raw === "నూటొక్కటి" || raw === "నూటొకటి") return 101;
+    const remainder = parseNumber(raw.slice("నూట".length).trimStart());
+    return remainder > 0 && remainder < 100 ? 100 + remainder : NaN;
+  }
   return parseUnscaled(raw);
 }
 
@@ -113,7 +138,8 @@ export function normalizeQuantity(raw: string): { qty: number; unit: Unit } | nu
     .replace(/[०-९]/gu, (digit) => String(digit.charCodeAt(0) - 0x0966))
     .replace(/[౦-౯]/gu, (digit) => String(digit.charCodeAt(0) - 0x0c66))
     .replace(/ చిన్న సంచులో$/u, " సంచులో")
-    .replace(/^(అర|పావు)కిలో$/u, "$1 కిలో");
+    .replace(/మిల్లీ (?=లీట\S*$)/u, "మిల్లీ")
+    .replace(/^(అర|పావు|ముప్పావు|ఒకటిన్నర|రెండున్నర)(\p{Script=Telugu}+)$/u, "$1 $2");
   const match = /^(.+?)(?: |(?<=\d))([\p{L}\p{M}]+)$/u.exec(text);
   if (!match?.[1] || !match[2]) return null;
 
