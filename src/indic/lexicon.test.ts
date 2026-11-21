@@ -130,6 +130,14 @@ const cases: [string, string | null][] = [
   ["perugu", "curd"],
   ["పసుపు", "turmeric"],
   ["ఉప్పు", "salt"],
+  // Spoken item spans from recorded eval rec-12, rec-19, rec-20, and rec-26.
+  ["Vim bar", "dishwash-bar"],
+  ["Surf Excel", "detergent-powder"],
+  ["gobhi", "cauliflower"],
+  ["kele", "banana"],
+  ["patta gobhi", "cabbage"],
+  ["Vim", null],
+  ["Surf Excel liquid", null],
 ];
 
 for (const [raw, expected] of cases) {
