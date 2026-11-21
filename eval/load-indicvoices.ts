@@ -50,13 +50,15 @@ for (const j of jobs) {
   if (j.limit <= 0) continue;
   // No ORDER BY: preserve_insertion_order keeps file order, so LIMIT is deterministic and stops scanning early.
   const res = await con.runAndReadAll(
-    `SELECT text, ${j.dur}::DOUBLE AS dur, audio.path AS key, audio.bytes AS bytes FROM read_parquet(${j.files})
+    `SELECT text, ${j.dur}::DOUBLE AS dur, audio.bytes AS bytes FROM read_parquet(${j.files})
      WHERE task_name = '${j.task}' AND regexp_matches(text, '${j.re}') LIMIT ${j.limit}`,
   );
   for (const r of res.getRowObjects()) {
     const bytes = Buffer.from((r.bytes as { bytes: Uint8Array }).bytes);
     const ext = bytes.subarray(0, 4).toString("latin1") === "RIFF" ? "wav" : bytes.subarray(0, 4).toString("latin1") === "fLaC" ? "flac" : "bin";
-    const id = `iv-${j.tag}-${createHash("sha1").update(String(r.key)).digest("hex").slice(0, 8)}`;
+    // audio.path repeats across shards, so the id hashes the audio itself; identical clips are kept once.
+    const id = `iv-${j.tag}-${createHash("sha1").update(bytes).digest("hex").slice(0, 8)}`;
+    if (manifest.some((m) => m.id === id)) continue;
     const audioPath = `${DATA_DIR}/audio/${id}.${ext}`;
     writeFileSync(audioPath, bytes);
     manifest.push({ id, lang: j.lang, task: j.task, source: j.source, text: String(r.text), durationS: Number(r.dur), audioPath });
