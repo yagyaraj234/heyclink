@@ -73,10 +73,10 @@ export function sttKeywords(h: Household): string[] {
   return [...new Set([...Object.values(h.brands), ...items].map((w) => w.replaceAll("-", " ")))];
 }
 
-function toLine(l: LlmLine): GroceryLine[] {
-  const item = resolveItem(l.itemWord) ?? l.item;
+function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
+  const item = (harness ? resolveItem(l.itemWord) : null) ?? l.item;
   if (!item || !(ITEMS as string[]).includes(item)) return [];
-  const q = normalizeQuantity(l.qtyPhrase);
+  const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
   const line: GroceryLine = {
     raw: l.raw,
     item,
@@ -88,15 +88,21 @@ function toLine(l: LlmLine): GroceryLine[] {
   return [line];
 }
 
-export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }): Promise<Extraction> {
+/** harness: false = eval baseline (plain LLM: no household context, no STT keywords, no indic pass). */
+export interface PipelineOptions {
+  harness?: boolean;
+}
+
+export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true }: PipelineOptions = {}): Promise<Extraction> {
+  const context = harness ? `Household: ${householdContext(household)}\n` : "";
   const out = await ports.llm.json<LlmExtraction>({
     system: SYSTEM,
-    user: `Household: ${householdContext(household)}\nLanguage hint: ${lang}\nVoice note: ${text}`,
+    user: `${context}Language hint: ${lang}\nVoice note: ${text}`,
     schema: EXTRACTION_SCHEMA,
     schemaName: "extraction",
   });
   const extraction: Extraction = {
-    groceries: out.groceries.flatMap(toLine),
+    groceries: out.groceries.flatMap((l) => toLine(l, harness)),
     notes: out.notes,
   };
   if (out.advance) {
@@ -106,13 +112,13 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
   return extraction;
 }
 
-export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }): Promise<CallResult> {
+export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options: PipelineOptions = {}): Promise<CallResult> {
   const t0 = performance.now();
-  const opts: { lang?: Lang; keywords: string[] } = { keywords: sttKeywords(household) };
+  const opts: { lang?: Lang; keywords: string[] } = { keywords: options.harness === false ? [] : sttKeywords(household) };
   if (input.lang) opts.lang = input.lang;
   const transcript: Transcript = await ports.stt.transcribe(input.audioPath, opts);
   const t1 = performance.now();
-  const extraction = await processTranscript(transcript.text, transcript.lang, household, ports);
+  const extraction = await processTranscript(transcript.text, transcript.lang, household, ports, options);
   const t2 = performance.now();
   const actions: CallResult["actions"] = []; // lane 2 wires planActions here
   const t3 = performance.now();

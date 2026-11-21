@@ -73,3 +73,13 @@ test("processCall: out-of-catalog item (pizza base) is dropped, not forced onto 
   // the schema must let the model say "not in catalog"
   assert.match(JSON.stringify(calls[0]!.schema), /"enum":\[[^\]]*null/);
 });
+
+test("processCall with harness off (eval baseline): no household context reaches the LLM", async () => {
+  const { stt, calls: sttCalls } = fakeStt(case02.transcript, case02.lang);
+  const { llm, calls } = fakeLlm({ groceries: [], advance: null, notes: [] });
+
+  await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm }, { harness: false });
+
+  assert.doesNotMatch(calls[0]!.user, /aashirvaad|india-gate|diabetic/);
+  assert.deepEqual(sttCalls[0]!.keywords, []);
+});
