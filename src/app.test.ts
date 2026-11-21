@@ -612,3 +612,24 @@ test("approving a cart with { order } creates an order card; approving that plac
   const confirmed = (await (await post(`/actions/${sched.order.id}/approve`)).json()) as { status: string; order: OrderCard["order"] };
   assert.deepEqual([confirmed.status, confirmed.order.status], ["approved", "scheduled"]);
 });
+
+test("GET /households/:id/actions lists cards outside any call, newest first, with status and time", async (t) => {
+  const { base, post, close } = await serve(fakeStt(), { llm: mealLlm });
+  t.after(close);
+  const feed = async () => (await (await fetch(`${base}/households/h1/actions`)).json()) as { card: ActionCard; status: string; at: string }[];
+  assert.deepEqual(await feed(), []);
+
+  const first = (await (await post("/households/h1/meal-plan", { date: "2026-11-22" })).json()) as ActionCard;
+  const { cart } = (await (await post(`/actions/${first.id}/answer`, { option: "cook" })).json()) as { cart: ActionCard };
+  await post("/calls", { transcript: case01.transcript, householdId: "h1" }); // call cards stay in GET /calls
+  const second = (await (await post("/households/h1/meal-plan", { date: "2026-11-23" })).json()) as ActionCard;
+  await post(`/actions/${cart.id}/approve`);
+
+  const list = await feed();
+  assert.deepEqual(list.map((a) => [a.card.id, a.status]), [[second.id, "pending"], [cart.id, "approved"], [first.id, "answered"]]);
+  assert.deepEqual(list[1]!.card, cart);
+  const times = list.map((a) => Date.parse(a.at));
+  assert.ok(times.every((ms, i) => !Number.isNaN(ms) && (i === 0 || ms <= times[i - 1]!)));
+
+  assert.equal((await fetch(`${base}/households/nope/actions`)).status, 404);
+});

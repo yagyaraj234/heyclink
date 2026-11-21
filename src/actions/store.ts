@@ -7,10 +7,10 @@ import householdJson from "../../fixtures/household.json" with { type: "json" };
 export const DEMO_CODE = "TADKA2";
 
 // done = approved (cart/advance) or answered (question). lines = what the cart is built from.
-// choices = per question option, the line it adds to the cart (null = adds nothing).
+// choices = per question option, the line it adds to the cart (null = adds nothing). at = when addAction stored it.
 // placing = an order checkout is in flight (see placeOrder).
 export type Entry = {
-  card: ActionCard; householdId: string; callId?: string; done: boolean; lines?: GroceryLine[]; choices?: (GroceryLine | null)[]; placing?: boolean;
+  card: ActionCard; householdId: string; callId?: string; done: boolean; lines?: GroceryLine[]; choices?: (GroceryLine | null)[]; placing?: boolean; at?: string;
 };
 /** call.actions is rebuilt from the action rows, so a card edited through its Entry shows up in the call. */
 export type StoredCall = { call: CallResult; at: string; entries: Entry[] };
@@ -63,13 +63,16 @@ export function openStore(path = ":memory:") {
     addAction(e: Entry, { first = false } = {}) {
       const pos = first ? "COALESCE(MIN(pos), 0) - 1" : "COALESCE(MAX(pos), 0) + 1";
       db.prepare(`INSERT INTO actions SELECT ?, ?, ?, ${pos}, ? FROM actions WHERE call IS ?`)
-        .run(e.card.id, e.householdId, e.callId ?? null, JSON.stringify(e), e.callId ?? null);
+        .run(e.card.id, e.householdId, e.callId ?? null, JSON.stringify({ ...e, at: new Date().toISOString() }), e.callId ?? null);
     },
     /** Confirmed (approved) scheduled orders due by `now` (ISO, UTC) and not already being placed. */
     dueOrders: (now: string) =>
       (db.prepare(`SELECT data FROM actions WHERE data ->> '$.card.type' = 'order' AND data ->> '$.card.order.status' = 'scheduled'
         AND data ->> '$.done' AND NOT IFNULL(data ->> '$.placing', 0) AND data ->> '$.card.order.scheduledFor' <= ?`).all(now) as Row[])
         .map((r) => JSON.parse(r.data) as Entry),
+    /** Cards with no call (meal plans, the carts they make), newest first. */
+    looseActions: (householdId: string) =>
+      (db.prepare("SELECT data FROM actions WHERE household = ? AND call IS NULL ORDER BY rowid DESC").all(householdId) as Row[]).map((r) => JSON.parse(r.data) as Entry),
     saveAction: (e: Entry) => void db.prepare("UPDATE actions SET data = ? WHERE id = ?").run(JSON.stringify(e), e.card.id),
 
     /** Drops the fixture household's calls and actions and restores its fixture data. */
