@@ -128,23 +128,28 @@ function resolveTail(phrase: string): string | null {
   return null;
 }
 
-function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine[] {
-  if (l.requested === false) return [];
+function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine | Ambiguous | undefined {
+  if (l.requested === false) return;
   // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
   const branded = harness && spokenBrand(l.itemWord) !== undefined;
   let item = harness
     ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord) ?? resolveTail(l.raw))
     : l.item;
+  const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
   if (!item || !(ITEMS as string[]).includes(item)) {
-    // ambiguous word ("चना"): the one candidate this household already buys settles it
-    const seen = (l.candidates ?? []).filter((c) => known.has(c));
-    if (new Set(seen).size !== 1) return [];
+    // ambiguous word ("चना"): the one candidate this household already buys settles it, otherwise ask
+    const candidates = [...new Set(l.candidates ?? [])].filter((c) => (ITEMS as string[]).includes(c));
+    const seen = candidates.filter((c) => known.has(c));
+    if (seen.length !== 1) {
+      if (!candidates.length) return; // unknown product: dropped
+      const qty = q?.qty ?? l.qty;
+      return qty > 0 ? { raw: l.raw, qty, unit: q?.unit ?? l.unit, candidates } : { raw: l.raw, qty: 1, unit: "packet", candidates };
+    }
     item = seen[0]!;
   }
   // the spoken word beats the LLM's transliteration of it (हैंको vs "hanco"); the LLM's slug is matched whole,
   // never cut to a brand word inside it ("tata-sampann" stays, not tata)
   const brand = harness ? (spokenBrand(l.itemWord) ?? (l.brand ? (resolveBrand(l.brand) ?? l.brand) : undefined)) : l.brand;
-  const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
   const line: GroceryLine = {
     raw: l.raw,
     item,
@@ -160,7 +165,7 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine[]
     line.confidence = Math.min(line.confidence, 0.5);
   }
   if (brand) line.brand = brand.trim().toLowerCase().replace(/\s+/g, "-");
-  return [line];
+  return line;
 }
 
 /** harness: false = eval baseline (plain LLM: no household context, no STT keywords, no indic pass). */
@@ -177,10 +182,13 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     schema: EXTRACTION_SCHEMA,
     schemaName: "extraction",
   });
+  const lines = out.groceries.map((l) => toLine(l, harness, known));
   const extraction: PipelineExtraction = {
-    groceries: out.groceries.flatMap((l) => toLine(l, harness, known)),
+    groceries: lines.filter((l): l is GroceryLine => l !== undefined && !("candidates" in l)),
     notes: out.notes,
   };
+  const ambiguous = lines.filter((l): l is Ambiguous => l !== undefined && "candidates" in l);
+  if (ambiguous.length) extraction.ambiguous = ambiguous;
   if (out.advance) {
     extraction.advance = { amount: out.advance.amount };
     if (out.advance.reason) extraction.advance.reason = out.advance.reason;
