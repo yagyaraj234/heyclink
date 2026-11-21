@@ -15,7 +15,7 @@ import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import type { Swiggy } from "./actions/swiggy.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
-import { cartRevision, historyLines, manualReceipt, openStore } from "./actions/store.ts";
+import { cartRevision, historyLines, manualReceipt } from "./actions/store.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
@@ -31,7 +31,7 @@ export interface AppDeps {
   corsOrigin?: string; // default "*": the API has no cookies or auth
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
   health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
-  store?: Store; // default: a fresh in-memory database
+  store: Store;
   instamart?: InstamartConfig;
   swiggy?: Swiggy; // places approved orders; default: labelled mock orders
 }
@@ -90,14 +90,14 @@ function parseSignup(body: unknown): Signup | string {
   };
 }
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy, instamart }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store, swiggy = mockSwiggy, instamart }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
-  const feedTracking = (e: Entry, owner: boolean) => {
+  const feedTracking = async (e: Entry, owner: boolean) => {
     const tracking = e.tracking;
     let receipt = tracking?.receipt;
-    if (!e.done && e.card.type === "cart" && store.instamartClaimed(e.card.id)) {
-      receipt = store.instamartReceipt(e.card.id, cartRevision(e.card.cart));
+    if (!e.done && e.card.type === "cart" && await store.instamartClaimed(e.card.id)) {
+      receipt = await store.instamartReceipt(e.card.id, cartRevision(e.card.cart));
       if (!receipt) return owner ? {...tracking, instamartPending: true} : tracking;
     }
     if (!receipt) return tracking;
@@ -105,11 +105,11 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const lines = receipt.lines.map(({price: _price, ...line}) => line);
     return {...tracking, receipt: {source: receipt.source, lines}};
   };
-  const withStatus = ({call, entries}: StoredCall, owner = false) => {
-    const tracking = Object.fromEntries(entries.flatMap(e => {
-      const value = feedTracking(e, owner);
+  const withStatus = async ({call, entries}: StoredCall, owner = false) => {
+    const tracking = Object.fromEntries((await Promise.all(entries.map(async e => {
+      const value = await feedTracking(e, owner);
       return value ? [[e.card.id, value]] : [];
-    }));
+    }))).flat());
     return {...call, ...(Object.keys(tracking).length && {tracking}), status: Object.fromEntries(entries.map(e => [e.card.id, statusOf(e)]))};
   };
 
@@ -127,9 +127,9 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   app.use(express.json());
   app.use(express.raw({ type: "audio/*", limit: "25mb" }));
 
-  app.post(["/actions/:id/approve", "/actions/:id/review"], (req, res, next) => {
-    const entry = typeof req.params.id === "string" ? store.action(req.params.id) : undefined;
-    if (entry && store.hasOwnerKey(entry.householdId) && !store.isOwner(entry.householdId, req.get("authorization"))) {
+  app.post(["/actions/:id/approve", "/actions/:id/review"], async (req, res, next) => {
+    const entry = typeof req.params.id === "string" ? await store.action(req.params.id) : undefined;
+    if (entry && await store.hasOwnerKey(entry.householdId) && !await store.isOwner(entry.householdId, req.get("authorization"))) {
       return void res.status(403).json({error: "Owner confirmation required"});
     }
     next();
@@ -142,7 +142,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const isAudio = Buffer.isBuffer(req.body);
     const body: { householdId?: unknown; transcript?: unknown; lang?: unknown } = isAudio ? {} : (req.body ?? {});
     const householdId = String(req.query.householdId ?? body.householdId ?? "");
-    const household = store.household(householdId);
+    const household = await store.household(householdId);
     if (!household) return void res.status(404).json({ error: `unknown household "${householdId}"` });
     const lang: Lang | undefined = LANGS.find((l) => l === (req.query.lang ?? body.lang));
     // mode=plain: the base model (no household context, STT keywords or indic pass) for side-by-side demos.
@@ -152,7 +152,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     // harness only: the household's last calls, oldest → newest, so "woh wala" can refer back to them
     const options = mode !== "harness" ? { harness: false } : {
       harness: true,
-      recent: store.calls(householdId, RECENT).reverse().map(({ call: c, at }): RecentCall => ({
+      recent: (await store.calls(householdId, RECENT)).reverse().map(({ call: c, at }): RecentCall => ({
         at,
         transcript: c.transcript.text,
         lines: c.extraction.groceries.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
@@ -178,7 +178,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     // Plain results are for comparison only: never stored, so their cards can't be approved.
     if (!options.harness) return void res.json({ ...result, status: {} });
 
-    store.addCall(result, householdId, new Date().toISOString());
+    await store.addCall(result, householdId, new Date().toISOString());
     const { callId, extraction } = result;
     const { questions } = groceryPlan(extraction as ExtractionWithAmbiguous, ctx);
     let q = 0;
@@ -189,33 +189,33 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         entry.choices = question?.choices;
         entry.heldIndex = question?.heldIndex;
       }
-      store.addAction(entry);
+      await store.addAction(entry);
     }
-    res.status(201).json(withStatus(store.call(callId)!));
+    res.status(201).json(await withStatus((await store.call(callId))!));
   });
 
-  app.get("/households/:id/actions", (req, res) => {
-    if (!store.household(req.params.id)) return void res.status(404).json({ error: "unknown household" });
-    const owner = store.isOwner(req.params.id, req.get("authorization"));
-    res.json(store.looseActions(req.params.id).map(e => ({card: e.card, status: statusOf(e), at: e.at, tracking: feedTracking(e, owner)})));
+  app.get("/households/:id/actions", async (req, res) => {
+    if (!await store.household(req.params.id)) return void res.status(404).json({ error: "unknown household" });
+    const owner = await store.isOwner(req.params.id, req.get("authorization"));
+    res.json(await Promise.all((await store.looseActions(req.params.id)).map(async e => ({card: e.card, status: statusOf(e), at: e.at, tracking: await feedTracking(e, owner)}))));
   });
 
-  app.get("/calls", (req, res) => {
+  app.get("/calls", async (req, res) => {
     const householdId = String(req.query.householdId ?? "");
-    if (!store.household(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
-    const owner = store.isOwner(householdId, req.get("authorization"));
-    res.json(store.calls(householdId).map(call => withStatus(call, owner)));
+    if (!await store.household(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
+    const owner = await store.isOwner(householdId, req.get("authorization"));
+    res.json(await Promise.all((await store.calls(householdId)).map(call => withStatus(call, owner))));
   });
 
-  app.get("/calls/:id", (req, res) => {
-    const stored = store.call(req.params.id);
+  app.get("/calls/:id", async (req, res) => {
+    const stored = await store.call(req.params.id);
     if (!stored) return void res.status(404).json({ error: "unknown call" });
     const household = stored.entries[0]?.householdId;
-    res.json(withStatus(stored, !!household && store.isOwner(household, req.get("authorization"))));
+    res.json(await withStatus(stored, !!household && await store.isOwner(household, req.get("authorization"))));
   });
 
-  app.post("/actions/:id/review", (req, res) => {
-    const entry = store.action(req.params.id);
+  app.post("/actions/:id/review", async (req, res) => {
+    const entry = await store.action(req.params.id);
     if (!entry || entry.card.type !== "cart") return void res.status(404).json({ error: "unknown cart" });
     const { card } = entry;
     const current = reviewOf(card.cart);
@@ -230,20 +230,20 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       changed.add(edit.index);
       lines[edit.index] = { ...lines[edit.index]!, qty: edit.qty, unit: edit.unit, interpretation: undefined };
     }
-    const household = store.household(entry.householdId)!;
+    const household = (await store.household(entry.householdId))!;
     const next = priceCart(lines.filter(l => l.qty > 0), household, "owner");
     if (next.held[0]) return void res.status(422).json({ error: next.held[0].reason });
     next.held = current.held ?? [];
     card.cart = next;
     card.needsApproval = next.total > household.approvalLimit;
-    store.saveAction(entry);
+    await store.saveAction(entry);
     res.json({ cart: card });
   });
 
-  app.post("/actions/:id/tracking", (req, res) => {
-    const entry = store.action(req.params.id);
+  app.post("/actions/:id/tracking", async (req, res) => {
+    const entry = await store.action(req.params.id);
     if (!entry || entry.card.type !== "cart") return void res.sendStatus(404);
-    if (!store.isOwner(entry.householdId, req.get("authorization"))) return void res.sendStatus(403);
+    if (!await store.isOwner(entry.householdId, req.get("authorization"))) return void res.sendStatus(403);
     if (!entry.card.cart.lines.length) return void res.status(409).json({error: "Cart has no items"});
     const tracking = entry.tracking ??= {};
     const { state, remindAt } = req.body ?? {};
@@ -251,18 +251,18 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const time = typeof remindAt === "string" ? Date.parse(remindAt) : NaN;
       if (!(time > Date.now()) || state !== undefined) return void res.status(400).json({error: "Choose a future reminder time"});
       if (entry.done || tracking.remindAt) return void res.status(409).json({error: "Cart already handled or reminder already set"});
-      if (!store.alerts.hasDevice(entry.householdId)) return void res.status(409).json({error: "Enable grocery notifications first"});
+      if (!await store.alerts.hasDevice(entry.householdId)) return void res.status(409).json({error: "Enable grocery notifications first"});
       tracking.remindAt = new Date(time).toISOString();
-      store.alerts.queue(entry.householdId, entry.card.id, "reminder", time);
+      await store.alerts.queue(entry.householdId, entry.card.id, "reminder", time);
     } else if (state === "ordered") {
       const cart = entry.card.cart as typeof entry.card.cart & {reviewId?: string};
       if (cart.reviewId && req.body?.reviewId !== cart.reviewId) return void res.status(409).json({error: "Cart changed. Review the current items first."});
       if (tracking.state === "delivered") return void res.status(409).json({error: "Already delivered"});
       const source: unknown = req.body?.source;
       if (source !== undefined && source !== "manual" && source !== "instamart") return void res.status(400).json({error: "Unknown purchase source"});
-      const claimed = store.instamartClaimed(entry.card.id);
+      const claimed = await store.instamartClaimed(entry.card.id);
       const usingInstamart = source === "instamart" || (!source && !!claimed);
-      const receipt = tracking.receipt ?? (usingInstamart ? store.instamartReceipt(entry.card.id, cartRevision(cart)) : manualReceipt(cart));
+      const receipt = tracking.receipt ?? (usingInstamart ? await store.instamartReceipt(entry.card.id, cartRevision(cart)) : manualReceipt(cart));
       if (!receipt || (usingInstamart && (receipt.source !== "instamart" || receipt.receiptId !== req.body?.receiptId)) ||
           (source && receipt.source !== source) || (entry.done && !tracking.receipt)) {
         return void res.status(409).json({error: "Review the current purchase receipt before confirming."});
@@ -270,23 +270,23 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       tracking.receipt = receipt;
       tracking.state = "ordered";
       delete tracking.remindAt;
-      store.confirmPurchase(entry, receipt);
+      await store.confirmPurchase(entry, receipt);
       return void res.json(tracking);
     } else if (state === "delivered") {
       if (!tracking.state) return void res.status(409).json({error: "Mark the order placed first"});
       tracking.state = "delivered";
       tracking.deliveredAt ??= new Date().toISOString();
     } else return void res.status(400).json({error: "Unknown tracking update"});
-    store.saveAction(entry);
+    await store.saveAction(entry);
     res.json(tracking);
   });
 
   app.post("/actions/:id/approve", async (req, res) => {
-    const entry = store.action(req.params.id);
+    const entry = await store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
     if (card.type === "question" || card.type === "meal-plan") return void res.status(400).json({ error: `${card.type} cards are answered, not approved` });
-    if (card.type === "cart" && store.instamartClaimed(card.id)) {
+    if (card.type === "cart" && await store.instamartClaimed(card.id)) {
       return void res.status(409).json({error: "Confirm the reviewed purchase using grocery tracking."});
     }
     // { order: "now" | ISO time } on a cart → an order card; approving that card is the explicit confirmation
@@ -312,53 +312,53 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       }
     }
     if (card.type === "order") {
-      const confirmed = store.confirmOrder(card.id);
+      const confirmed = await store.confirmOrder(card.id);
       if (confirmed.card.type !== "order") return void res.status(409).json({error: "Order changed"});
       const order = confirmed.card.order;
       const result = order.status === "scheduled" && !order.scheduledFor ? await placeOrder(confirmed, store, swiggy) : order;
       return void res.json({status: "approved", order: result});
     }
     if (!entry.done && card.type === "cart" && want === undefined) {
-      const household = store.household(entry.householdId)!;
+      const household = (await store.household(entry.householdId))!;
       household.history.push({
         at: new Date().toISOString().slice(0, 10),
         lines: historyLines(manualReceipt(card.cart)),
       });
-      store.saveHousehold(household);
+      await store.saveHousehold(household);
     }
     entry.done = true;
-    store.saveAction(entry);
+    await store.saveAction(entry);
     if (card.type === "cart" && want !== undefined) {
       const order: ActionCard = { id: randomUUID(), type: "order", order: { cart: card.cart, status: "scheduled", ...(scheduledFor && { scheduledFor }) }, needsApproval: true };
-      store.addAction({ card: order, householdId: entry.householdId, callId: entry.callId, done: false });
+      await store.addAction({ card: order, householdId: entry.householdId, callId: entry.callId, done: false });
       return void res.json({ status: "approved", order });
     }
     res.json({ status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) });
   });
 
   app.post("/actions/:id/answer", async (req, res) => {
-    const entry = store.action(req.params.id);
+    const entry = await store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card, choices } = entry;
     if (card.type === "meal-plan") {
       if (entry.done) return void res.status(409).json({ error: "already answered" });
       const option = MEAL_CHOICES.find((c) => c === req.body?.option);
       if (!option) return void res.status(400).json({ error: `option must be one of ${JSON.stringify(MEAL_CHOICES)}` });
-      const household = store.household(entry.householdId)!;
+      const household = (await store.household(entry.householdId))!;
       const day = WEEKDAYS[new Date(`${card.plan.date}T00:00:00Z`).getUTCDay()]!; // the date is a calendar day, not an instant
       const habit = (household.habits ??= {})[day] ??= { cook: 0, order: 0 };
       habit[option]++;
-      store.saveHousehold(household);
+      await store.saveHousehold(household);
       entry.done = true;
-      store.saveAction(entry);
+      await store.saveAction(entry);
       if (option === "order") return void res.json({ status: "answered" });
       const saved = reviewOf(card.plan.cook.cart);
       const cart = saved.reviewId ? saved : priceCart(requestsFromCart(saved), household);
       const fresh: ActionCard = { id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit };
-      store.addAction({ card: fresh, householdId: household.id, done: false });
+      await store.addAction({ card: fresh, householdId: household.id, done: false });
       for (const issue of cart.held ?? []) {
         const question = quantityQuestion(issue, household);
-        store.addAction({ ...question, cartId: fresh.id, householdId: household.id, done: false });
+        await store.addAction({ ...question, cartId: fresh.id, householdId: household.id, done: false });
       }
       return void res.json({ status: "answered", cart: fresh });
     }
@@ -367,9 +367,9 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     let option: unknown = req.body?.option;
     if (Buffer.isBuffer(req.body)) {
       if (!req.body.length) return void res.status(400).json({ error: "empty audio body" });
-      const lang = store.household(entry.householdId)!.cook.lang;
+      const lang = (await store.household(entry.householdId))!.cook.lang;
       const transcript = await withAudio(req, path => stt.transcribe(path, { lang, keywords: card.options }));
-      const current = store.action(card.id);
+      const current = await store.action(card.id);
       if (!current || current.done || JSON.stringify(current.card) !== JSON.stringify(card)) {
         return void res.status(409).json({ error: "This question has changed." });
       }
@@ -381,7 +381,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     }
     const line = choices[card.options.indexOf(option)];
     const { callId, householdId } = entry;
-    const related = entry.cartId ? store.action(entry.cartId) : callId && store.call(callId)?.entries.find(e => e.card.type === "cart" && !e.done);
+    const related = entry.cartId ? await store.action(entry.cartId) : callId && (await store.call(callId))?.entries.find(e => e.card.type === "cart" && !e.done);
     const cartEntry = related && !related.done ? related : undefined;
     const previous = cartEntry?.card.type === "cart" ? reviewOf(cartEntry.card.cart) : undefined;
     const held = (previous?.held ?? []).filter(h => h.index !== entry.heldIndex);
@@ -389,36 +389,36 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       if (previous && cartEntry && held.length !== previous.held?.length) {
         previous.held = held;
         previous.reviewId = randomUUID();
-        store.saveAction(cartEntry);
+        await store.saveAction(cartEntry);
       }
       entry.done = true;
-      store.saveAction(entry);
+      await store.saveAction(entry);
       return void res.json({ status: "answered" });
     }
     const lines = [...(previous ? requestsFromCart(previous) : []), { ...line, confidence: 1 }];
-    const household = store.household(householdId)!;
+    const household = (await store.household(householdId))!;
     const next = groceryPlan({ groceries: lines, notes: [] }, household);
     if (next.questions.length) {
       const followUp = next.questions[0]!;
       entry.card = { ...followUp.card, id: card.id };
       entry.choices = followUp.choices;
-      store.saveAction(entry);
+      await store.saveAction(entry);
       return void res.status(422).json({ error: followUp.card.text, question: entry.card });
     }
     next.cart.held = held;
     const fresh: ActionCard = { id: cartEntry?.card.id ?? randomUUID(), type: "cart", cart: next.cart, needsApproval: next.cart.total > household.approvalLimit };
     entry.done = true;
-    store.saveAction(entry);
+    await store.saveAction(entry);
     if (cartEntry) {
       cartEntry.card = fresh;
-      store.saveAction(cartEntry);
+      await store.saveAction(cartEntry);
     } else {
-      store.addAction({ card: fresh, callId, householdId, done: false }, { first: true });
+      await store.addAction({ card: fresh, callId, householdId, done: false }, { first: true });
     }
     res.json({ status: "answered", cart: cartEntry?.card ?? fresh });
   });
 
-  app.post("/households", (req, res) => {
+  app.post("/households", async (req, res) => {
     const parsed = parseSignup(req.body);
     if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
     const id = randomUUID();
@@ -426,28 +426,28 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const ownerToken = randomBytes(32).toString("base64url");
     let cookCode: string;
     do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
-    while (!store.addHousehold(household, cookCode, ownerToken));
+    while (!await store.addHousehold(household, cookCode, ownerToken));
     res.set("cache-control", "no-store").status(201).json({ id, cookCode, ownerToken, instamartAvailable: !!instamart });
   });
 
-  app.post("/households/:id/alerts", (req, res) => {
-    if (!store.isOwner(req.params.id, req.get("authorization"))) return void res.sendStatus(403);
+  app.post("/households/:id/alerts", async (req, res) => {
+    if (!await store.isOwner(req.params.id, req.get("authorization"))) return void res.sendStatus(403);
     const token = req.body?.token;
     if (typeof token !== "string" || !/^Expo(?:nent)?PushToken\[[a-zA-Z0-9_-]{1,200}\]$/.test(token)) {
       return void res.status(400).json({error: "Invalid Expo device token"});
     }
-    store.alerts.register(req.params.id, token);
+    await store.alerts.register(req.params.id, token);
     res.sendStatus(204);
   });
 
-  app.post("/join", (req, res) => {
-    const household = store.householdByCode(String(req.body?.code ?? "").trim().toUpperCase());
+  app.post("/join", async (req, res) => {
+    const household = await store.householdByCode(String(req.body?.code ?? "").trim().toUpperCase());
     if (!household) return void res.status(404).json({ error: "unknown code" });
     res.json({ householdId: household.id, role: "cook", cook: { name: household.cook.name, lang: household.cook.lang } });
   });
 
   app.post("/households/:id/meal-plan", async (req, res) => {
-    const household = store.household(req.params.id);
+    const household = await store.household(req.params.id);
     if (!household) return void res.status(404).json({ error: "unknown household" });
     const DAY = 86_400_000, IST = 5.5 * 3_600_000;
     const date: unknown = req.body?.date ?? new Date(Date.now() + IST + DAY).toISOString().slice(0, 10);
@@ -455,20 +455,20 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       return void res.status(400).json({ error: "date must be YYYY-MM-DD" });
     }
     const card: ActionCard = { id: randomUUID(), type: "meal-plan", plan: await planMeals(household, date, { llm }), options: [...MEAL_CHOICES] };
-    store.addAction({ card, householdId: household.id, done: false });
+    await store.addAction({ card, householdId: household.id, done: false });
     res.status(201).json(card);
   });
 
-  app.get("/households/:id", (req, res) => {
-    const household = store.household(req.params.id);
+  app.get("/households/:id", async (req, res) => {
+    const household = await store.household(req.params.id);
     if (!household) return void res.status(404).json({ error: "unknown household" });
     res.json(household);
   });
 
   // ponytail: unauthenticated, like the rest of the demo API; anyone with the URL can reset h1.
-  app.post("/households/:id/reset", (req, res) => {
+  app.post("/households/:id/reset", async (req, res) => {
     if (req.params.id !== householdJson.id) return void res.status(404).json({ error: "only the demo household can be reset" });
-    store.resetDemo();
+    await store.resetDemo();
     res.json({ status: "reset" });
   });
 

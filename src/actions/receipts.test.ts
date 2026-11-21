@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { createApp } from "../app.ts";
@@ -11,7 +7,8 @@ import { processCall } from "../pipeline/process.ts";
 import { openStore } from "./store.ts";
 import type { Llm } from "../contracts.ts";
 
-async function setup(t: TestContext, store = openStore()) {
+async function setup(t: TestContext) {
+  const store = await openStore();
   const llm: Llm = {
     json: async <T>() =>
       ({
@@ -104,7 +101,7 @@ test("owner manual confirmation freezes reviewed pack sizes for both household h
 test("a retailer claim without a handed-off bill cannot confirm a draft or silently switch to manual", async (t) => {
   const { store, card, track, post, detail } = await setup(t);
   const revision = createHash("sha256").update(JSON.stringify(card.cart)).digest("hex");
-  store.claimInstamart(card.id, revision);
+  await store.claimInstamart(card.id, revision);
   assert.equal((await track({ state: "ordered" })).status, 409);
   assert.equal((await track({ state: "ordered", source: "instamart" })).status, 409);
   assert.equal((await post("/actions/" + card.id + "/approve", {})).status, 409);
@@ -115,7 +112,7 @@ test("a retailer claim without a handed-off bill cannot confirm a draft or silen
 test("provider handoff binds owner confirmation to its exact bill and writes only the household's added packs", async (t) => {
   const { store, card, track, detail, base, owner } = await setup(t);
   const revision = createHash("sha256").update(JSON.stringify(card.cart)).digest("hex");
-  store.claimInstamart(card.id, revision);
+  await store.claimInstamart(card.id, revision);
   const lines = [
     { item: "onion", qty: 750, unit: "g" as const, pack: { count: 3, size: 250, unit: "g" as const }, price: 48 },
   ];
@@ -126,7 +123,7 @@ test("provider handoff binds owner confirmation to its exact bill and writes onl
     fees: [{ label: "Delivery", value: "₹10" }],
     address: "Home",
   };
-  store.saveInstamartReceipt(card.id, revision, receipt);
+  await store.saveInstamartReceipt(card.id, revision, receipt);
   const first = (await (await detail(true)).json()).tracking[card.id].receipt;
   assert.deepEqual(first.lines, lines);
   assert.equal(first.total, "₹78");
@@ -134,7 +131,7 @@ test("provider handoff binds owner confirmation to its exact bill and writes onl
   assert.deepEqual(preview?.lines, [{ item: "onion", qty: 750, unit: "g", pack: { count: 3, size: 250, unit: "g" } }]);
   assert.equal(preview.address, undefined);
   assert.equal(preview.receiptId, undefined);
-  store.saveInstamartReceipt(card.id, revision, { ...receipt, total: "₹76" });
+  await store.saveInstamartReceipt(card.id, revision, { ...receipt, total: "₹76" });
   const latest = (await (await detail(true)).json()).tracking[card.id].receipt;
   assert.notEqual(latest.receiptId, first.receiptId);
   assert.equal((await track({ state: "ordered", source: "instamart", receiptId: first.receiptId })).status, 409);
@@ -157,8 +154,8 @@ test("provider handoff binds owner confirmation to its exact bill and writes onl
 test("stockouts learn only delivered items in the receipt and combine mixed retailer pack units", async (t) => {
   const { store, owner, card, track, detail, post } = await setup(t);
   const revision = createHash("sha256").update(JSON.stringify(card.cart)).digest("hex");
-  store.claimInstamart(card.id, revision);
-  store.saveInstamartReceipt(card.id, revision, {
+  await store.claimInstamart(card.id, revision);
+  await store.saveInstamartReceipt(card.id, revision, {
     source: "instamart",
     lines: [
       { item: "onion", qty: 1, unit: "kg", pack: { count: 1, size: 1, unit: "kg" } },
@@ -176,42 +173,20 @@ test("stockouts learn only delivered items in the receipt and combine mixed reta
 test("a fresh provider bill read invalidates prior handoff and an older in-flight read cannot restore it", async (t) => {
   const { store, card, track, detail } = await setup(t);
   const revision = createHash("sha256").update(JSON.stringify(card.cart)).digest("hex");
-  store.claimInstamart(card.id, revision);
+  await store.claimInstamart(card.id, revision);
   const draft = {
     source: "instamart" as const,
     lines: [{ item: "onion", qty: 500, unit: "g" as const, pack: { count: 1, size: 500, unit: "g" as const } }],
   };
-  store.saveInstamartReceipt(card.id, revision, draft);
+  await store.saveInstamartReceipt(card.id, revision, draft);
   const { receipt } = (await (await detail(true)).json()).tracking[card.id];
-  const first = store.beginInstamartReview(card.id, revision);
-  const latest = store.beginInstamartReview(card.id, revision);
+  const first = await store.beginInstamartReview(card.id, revision);
+  const latest = await store.beginInstamartReview(card.id, revision);
   assert.equal((await track({ state: "ordered", source: "instamart", receiptId: receipt.receiptId })).status, 409);
-  assert.equal(store.isInstamartReviewCurrent(card.id, revision, first), false);
-  assert.throws(() => store.saveInstamartReceipt(card.id, revision, draft, first));
-  store.saveInstamartReceipt(card.id, revision, draft, latest);
+  assert.equal(await store.isInstamartReviewCurrent(card.id, revision, first), false);
+  await assert.rejects(store.saveInstamartReceipt(card.id, revision, draft, first));
+  await store.saveInstamartReceipt(card.id, revision, draft, latest);
   assert.equal((await (await detail(true)).json()).tracking[card.id].receipt.source, "instamart");
-});
-
-test("existing SQLite claim without bill details stays unproven after upgrades and restarts", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "household-receipt-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const file = join(directory, "vfi.db");
-  const old = new DatabaseSync(file);
-  old.exec("CREATE TABLE instamart_prepared (cart TEXT PRIMARY KEY, revision TEXT NOT NULL)");
-  old.close();
-  const { store, card, track, detail } = await setup(t, openStore(file));
-  const revision = createHash("sha256").update(JSON.stringify(card.cart)).digest("hex");
-  store.claimInstamart(card.id, revision);
-  assert.equal((await track({ state: "ordered", source: "instamart" })).status, 409);
-  assert.equal((await (await detail(true)).json()).tracking[card.id].instamartPending, true);
-  const reopen = openStore(file);
-  assert.equal(reopen.instamartClaimed(card.id), revision);
-  assert.equal(reopen.instamartReceipt(card.id, revision), undefined);
-  store.saveInstamartReceipt(card.id, revision, {
-    source: "instamart",
-    lines: [{ item: "onion", qty: 500, unit: "g", pack: { count: 2, size: 250, unit: "g" } }],
-  });
-  assert.equal(reopen.instamartReceipt(card.id, revision)?.lines[0]?.pack.count, 2);
 });
 
 test("a demo order adds actual packs to history once, only after placement", async (t) => {
@@ -233,45 +208,4 @@ test("a demo order adds actual packs to history once, only after placement", asy
       ],
     ],
   );
-});
-
-test("placing legacy demo orders after restart keeps the history already written at cart approval", async (t) => {
-  const { runDue } = await import("./orders.ts");
-  const { mockSwiggy } = await import("./swiggy.ts");
-  const directory = mkdtempSync(join(tmpdir(), "legacy-placed-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const file = join(directory, "db");
-  const before = openStore(file);
-  const household = before.household("h1")!;
-  const lines = [{ item: "onion", qty: 500, unit: "g" as const }];
-  household.history.push({ at: "2025-01-01", lines }, { at: "2025-01-02", lines });
-  before.saveHousehold(household);
-  const cart = {
-    lines: lines.map((l) => ({ ...l, price: 22, searchUrl: "old" })),
-    total: 22,
-    platform: "mock" as const,
-  };
-  before.addAction({
-    householdId: "h1",
-    done: true,
-    card: {
-      id: "scheduled-old",
-      type: "order",
-      needsApproval: true,
-      order: { status: "scheduled", scheduledFor: "2025-01-01", cart },
-    },
-  });
-  before.addAction({
-    householdId: "h1",
-    done: false,
-    card: { id: "pending-old", type: "order", needsApproval: true, order: { status: "scheduled", cart } },
-  });
-  const store = openStore(file);
-  const { post, base } = await setup(t, store);
-  assert.equal((await runDue(new Date(), store, mockSwiggy))[0]?.status, "placed");
-  const feed = await (await fetch(base + "/households/h1/actions")).json();
-  const old = feed.find((e: { card: { id: string } }) => e.card.id === "pending-old").card;
-  const approved = await post("/actions/pending-old/approve", { reviewId: old.order.cart.reviewId });
-  assert.equal((await approved.json()).order.status, "placed");
-  assert.deepEqual(store.household("h1")!.history, household.history);
 });

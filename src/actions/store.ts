@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import pg from "pg";
 import type { InstamartIntent } from "./instamart-intent.ts";
-import { priceCart, purchasedQuantity, requestsFromCart, reviewOf } from "./cart.ts";
+import { purchasedQuantity, reviewOf } from "./cart.ts";
 import type { ReviewedLine } from "./cart.ts";
-import { openAlerts } from "./alerts.ts";
-import { DatabaseSync } from "node:sqlite";
-import type { SQLInputValue } from "node:sqlite";
+import { ALERTS_SCHEMA, openAlerts } from "./alerts.ts";
 import type { ActionCard, CallResult, Cart, GroceryLine, Household, Unit } from "../contracts.ts";
 import householdJson from "../../fixtures/household.json" with { type: "json" };
 
@@ -49,134 +49,163 @@ export function historyLines(receipt: GroceryReceipt): Household["history"][numb
   return receipt.lines.map(({item,qty,unit,brand}) => ({item,qty,unit,...(brand && {brand})}));
 }
 
-/** Households, calls and actions as JSON rows in node:sqlite. ":memory:" for tests. */
-export function openStore(path = ":memory:", { recoverInterruptedOrders = false } = {}) {
-  const db = new DatabaseSync(path);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS households (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS owner_keys (household TEXT PRIMARY KEY, hash TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS instamart_prepared (cart TEXT PRIMARY KEY, revision TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS instamart_links (household TEXT PRIMARY KEY, sealed TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, household TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, household TEXT NOT NULL, call TEXT, pos INTEGER NOT NULL, data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS usage_samples (
-      household TEXT NOT NULL, receipt TEXT NOT NULL, item TEXT NOT NULL,
-      qty REAL NOT NULL, unit TEXT NOT NULL, days REAL NOT NULL, PRIMARY KEY(receipt,item)
-    );
-    CREATE INDEX IF NOT EXISTS samples_by_household ON usage_samples(household,item);
-    CREATE INDEX IF NOT EXISTS calls_household ON calls(household);
-    CREATE INDEX IF NOT EXISTS actions_call ON actions(call, pos);
-  `);
+export type Query = <R extends pg.QueryResultRow = Row>(sql: string, ...args: unknown[]) => Promise<pg.QueryResult<R>>;
+export type Tx = <T>(fn: () => Promise<T>) => Promise<T>;
+type Row = { data: string };
 
-  if (recoverInterruptedOrders) {
-    // The checkout runner has restarted. The previous attempt may have reached the provider.
-    db.exec(`UPDATE actions
-      SET data=json_remove(json_set(data,'$.card.order.status','failed'),'$.placing')
-      WHERE data->>'$.card.type'='order' AND data->>'$.card.order.status'='scheduled'
-        AND data->>'$.done' AND data->>'$.placing'`);
+// JSON stays as text: jsonb reorders keys, and cartRevision hashes the serialized cart.
+// ISO timestamps compare as text, so their comparisons use COLLATE "C".
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS households (id text PRIMARY KEY, code text NOT NULL UNIQUE, data text NOT NULL);
+  CREATE TABLE IF NOT EXISTS owner_keys (household text PRIMARY KEY, hash text NOT NULL);
+  CREATE TABLE IF NOT EXISTS instamart_prepared (cart text PRIMARY KEY, revision text NOT NULL, intent text, receipt text, read_token text, review_revision text);
+  CREATE TABLE IF NOT EXISTS instamart_links (household text PRIMARY KEY, sealed text NOT NULL);
+  CREATE TABLE IF NOT EXISTS calls (seq bigint GENERATED ALWAYS AS IDENTITY, id text PRIMARY KEY, household text NOT NULL, at text NOT NULL, data text NOT NULL);
+  CREATE TABLE IF NOT EXISTS actions (seq bigint GENERATED ALWAYS AS IDENTITY, id text PRIMARY KEY, household text NOT NULL, call text, pos integer NOT NULL, data text NOT NULL);
+  CREATE TABLE IF NOT EXISTS usage_samples (
+    seq bigint GENERATED ALWAYS AS IDENTITY, household text NOT NULL, receipt text NOT NULL, item text NOT NULL,
+    qty double precision NOT NULL, unit text NOT NULL, days double precision NOT NULL, PRIMARY KEY (receipt, item)
+  );
+  CREATE INDEX IF NOT EXISTS samples_by_household ON usage_samples (household, item);
+  CREATE INDEX IF NOT EXISTS calls_household ON calls (household);
+  CREATE INDEX IF NOT EXISTS actions_call ON actions (call, pos);
+  CREATE INDEX IF NOT EXISTS actions_household ON actions (household);
+`;
+
+/**
+ * Households, calls and actions as JSON rows in Postgres.
+ * `url` set: that database's default schema (production, DATABASE_URL).
+ * `url` unset: a fresh schema on TEST_DATABASE_URL, or `schema` to reopen one (tests).
+ */
+export async function openStore({ url, schema, recoverInterruptedOrders = false }: { url?: string; schema?: string; recoverInterruptedOrders?: boolean } = {}) {
+  if (!url) {
+    url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("Set TEST_DATABASE_URL to a Postgres you can create schemas in (see README)");
+    // ponytail: test schemas are never dropped; recreate the test container to clean up.
+    schema ??= "t_" + randomUUID().replaceAll("-", "");
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try { await admin.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`); } finally { await admin.end(); }
   }
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: Number(process.env.PG_POOL_MAX) || 5,
+    connectionTimeoutMillis: 15_000, // a suspended free-tier Neon compute takes a few seconds to wake
+    query_timeout: 10_000,
+    allowExitOnIdle: true,
+    ...(schema && { options: `-c search_path=${schema}` }),
+  });
+  pool.on("error", (err) => console.error("Postgres idle client error:", err.message)); // Neon drops idle connections
 
-  // Older claims deliberately have no proof. Never infer their retailer contents from a local draft.
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const fields = db.prepare("PRAGMA table_info(instamart_prepared)").all();
-    if (!fields.some(f => f.name === "intent")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN intent TEXT");
-    if (!fields.some(f => f.name === "receipt")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN receipt TEXT");
-    if (!fields.some(f => f.name === "readToken")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN readToken TEXT");
-    if (!fields.some(f => f.name === "reviewRevision")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN reviewRevision TEXT");
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-
-  type Row = { data: string };
-  const one = <T>(sql: string, ...args: SQLInputValue[]) => {
-    const row = db.prepare(sql).get(...args) as Row | undefined;
+  // A transaction pins one pooled client; every query inside fn uses it through this.
+  const current = new AsyncLocalStorage<pg.PoolClient>();
+  const q: Query = (sql, ...args) => (current.getStore() ?? pool).query(sql, args);
+  const tx: Tx = async (fn) => {
+    if (current.getStore()) return fn();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await current.run(client, fn);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  const one = async <T>(sql: string, ...args: unknown[]) => {
+    const row = (await q(sql, ...args)).rows[0];
     return row && (JSON.parse(row.data) as T);
   };
+  const many = async <T>(sql: string, ...args: unknown[]) => (await q(sql, ...args)).rows.map(r => JSON.parse(r.data) as T);
   type CallRow = Row & { at: string };
-  const toStored = (row: CallRow): StoredCall => {
+  const toStored = async (row: CallRow): Promise<StoredCall> => {
     const call = JSON.parse(row.data) as CallResult;
-    const entries = (db.prepare("SELECT data FROM actions WHERE call = ? ORDER BY pos").all(call.callId) as Row[]).map((r) => JSON.parse(r.data) as Entry);
+    const entries = await many<Entry>("SELECT data FROM actions WHERE call = $1 ORDER BY pos, seq", call.callId);
     return { call: { ...call, actions: entries.map((e) => e.card) }, at: row.at, entries };
   };
+  const conflict = (message: string) => Object.assign(new Error(message), {status: 409});
 
-  const alerts = openAlerts(db);
+  // Instances starting together create the tables once.
+  await tx(async () => {
+    await q("SELECT pg_advisory_xact_lock(7262)");
+    await q(SCHEMA + ALERTS_SCHEMA);
+  });
+
+  const alerts = openAlerts(q, tx);
   const store = {
     alerts,
-    household: (id: string) => one<Household>("SELECT data FROM households WHERE id = ?", id),
-    householdByCode: (code: string) => one<Household>("SELECT data FROM households WHERE code = ?", code),
+    schema,
+    /** Ends the pool. `drop` also removes a test schema. */
+    async close({ drop = false } = {}) {
+      if (drop && schema) await q(`DROP SCHEMA ${schema} CASCADE`);
+      await pool.end();
+    },
+    household: (id: string) => one<Household>("SELECT data FROM households WHERE id = $1", id),
+    householdByCode: (code: string) => one<Household>("SELECT data FROM households WHERE code = $1", code),
     /** false when the code is already taken; the caller picks another. */
-    addHousehold(h: Household, code: string, token?: string): boolean {
-      db.exec("BEGIN");
-      try {
-        const added = db.prepare("INSERT INTO households VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(h.id, code, JSON.stringify(h)).changes === 1;
-        if (added && token) db.prepare("INSERT INTO owner_keys VALUES (?, ?)").run(h.id, createHash("sha256").update(token).digest("hex"));
-        db.exec("COMMIT");
-        return added;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    hasOwnerKey(id: string) {
-      return !!db.prepare("SELECT 1 FROM owner_keys WHERE household=?").get(id);
-    },
-    linkedInstamart: (id: string) =>
-      (db.prepare("SELECT sealed FROM instamart_links WHERE household = ?").get(id) as { sealed: string } | undefined)?.sealed,
-    saveInstamartLink: (id: string, sealed: string) =>
-      void db.prepare("INSERT OR REPLACE INTO instamart_links VALUES(?,?)").run(id, sealed),
+    addHousehold: (h: Household, code: string, token?: string) => tx(async () => {
+      const added = (await q("INSERT INTO households (id, code, data) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", h.id, code, JSON.stringify(h))).rowCount === 1;
+      if (added && token) await q("INSERT INTO owner_keys VALUES ($1, $2)", h.id, createHash("sha256").update(token).digest("hex"));
+      return added;
+    }),
+    hasOwnerKey: async (id: string) => !!(await q("SELECT 1 FROM owner_keys WHERE household = $1", id)).rowCount,
+    linkedInstamart: async (id: string) =>
+      (await q<{sealed: string}>("SELECT sealed FROM instamart_links WHERE household = $1", id)).rows[0]?.sealed,
+    saveInstamartLink: async (id: string, sealed: string) =>
+      void await q("INSERT INTO instamart_links VALUES ($1, $2) ON CONFLICT (household) DO UPDATE SET sealed = excluded.sealed", id, sealed),
     // Keep the claim after an upstream timeout: a repeat could add the same packs twice.
-    claimInstamart: (cart: string, revision: string, intent?: InstamartIntent) =>
-      db.prepare("INSERT INTO instamart_prepared (cart, revision, intent) VALUES (?,?,?) ON CONFLICT DO NOTHING")
-        .run(cart, revision, intent ? JSON.stringify(intent) : null).changes === 1,
-    instamartIntent: (cart: string) => one<InstamartIntent>("SELECT intent AS data FROM instamart_prepared WHERE cart=? AND intent IS NOT NULL", cart),
-    saveInstamartIntent(cart: string, intent: InstamartIntent) {
-      db.prepare("UPDATE instamart_prepared SET intent=?, receipt=NULL, readToken=NULL, reviewRevision=NULL WHERE cart=?").run(JSON.stringify(intent), cart);
+    claimInstamart: async (cart: string, revision: string, intent?: InstamartIntent) =>
+      (await q("INSERT INTO instamart_prepared (cart, revision, intent) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        cart, revision, intent ? JSON.stringify(intent) : null)).rowCount === 1,
+    instamartIntent: (cart: string) => one<InstamartIntent>("SELECT intent AS data FROM instamart_prepared WHERE cart = $1 AND intent IS NOT NULL", cart),
+    async saveInstamartIntent(cart: string, intent: InstamartIntent) {
+      await q("UPDATE instamart_prepared SET intent = $1, receipt = NULL, read_token = NULL, review_revision = NULL WHERE cart = $2", JSON.stringify(intent), cart);
     },
-    // A review binds the receipt to the current list while the claim still identifies the packs already sent.
     instamartReceipt: (cart: string, revision: string) =>
-      one<GroceryReceipt>("SELECT receipt AS data FROM instamart_prepared WHERE cart=? AND COALESCE(reviewRevision, revision)=? AND receipt IS NOT NULL", cart, revision),
-    beginInstamartReview(cart: string, revision: string) {
+      one<GroceryReceipt>("SELECT receipt AS data FROM instamart_prepared WHERE cart = $1 AND COALESCE(review_revision, revision) = $2 AND receipt IS NOT NULL", cart, revision),
+    async beginInstamartReview(cart: string, revision: string) {
       const token = randomUUID();
-      const entry = store.action(cart);
+      const entry = await store.action(cart);
       if (!entry || entry.done || entry.card.type !== "cart" || cartRevision(entry.card.cart) !== revision ||
-          !db.prepare("UPDATE instamart_prepared SET receipt=NULL, readToken=?, reviewRevision=? WHERE cart=?")
-            .run(token, revision, cart).changes) throw Object.assign(new Error("Cart changed. Reopen the current review."), {status: 409});
+          !(await q("UPDATE instamart_prepared SET receipt = NULL, read_token = $1, review_revision = $2 WHERE cart = $3", token, revision, cart)).rowCount)
+        throw conflict("Cart changed. Reopen the current review.");
       return token;
     },
-    isInstamartReviewCurrent: (cart: string, revision: string, token: string) =>
-      !!db.prepare("SELECT 1 FROM instamart_prepared WHERE cart=? AND reviewRevision=? AND readToken=?").get(cart, revision, token),
-    saveInstamartReceipt(cart: string, revision: string, receipt: Omit<GroceryReceipt, "receiptId">, token?: string) {
-      const entry = store.action(cart);
+    isInstamartReviewCurrent: async (cart: string, revision: string, token: string) =>
+      !!(await q("SELECT 1 FROM instamart_prepared WHERE cart = $1 AND review_revision = $2 AND read_token = $3", cart, revision, token)).rowCount,
+    async saveInstamartReceipt(cart: string, revision: string, receipt: Omit<GroceryReceipt, "receiptId">, token?: string) {
+      const entry = await store.action(cart);
       if (!entry || entry.done || entry.card.type !== "cart" || cartRevision(entry.card.cart) !== revision ||
-          !receipt.lines.length || receipt.source !== "instamart") throw Object.assign(new Error("Cart changed. Review in Instamart again."), {status: 409});
+          !receipt.lines.length || receipt.source !== "instamart") throw conflict("Cart changed. Review in Instamart again.");
       const encoded = JSON.stringify(receipt);
       const receiptId = createHash("sha256").update(revision).update(encoded).digest("hex");
-      const saved = db.prepare("UPDATE instamart_prepared SET receipt=? WHERE cart=? AND COALESCE(reviewRevision, revision)=? AND readToken IS ?")
-        .run(JSON.stringify({...receipt,receiptId}), cart, revision, token ?? null);
-      if (!saved.changes) throw Object.assign(new Error("Instamart claim changed."), {status: 409});
+      const saved = await q("UPDATE instamart_prepared SET receipt = $1 WHERE cart = $2 AND COALESCE(review_revision, revision) = $3 AND read_token IS NOT DISTINCT FROM $4",
+        JSON.stringify({...receipt, receiptId}), cart, revision, token ?? null);
+      if (!saved.rowCount) throw conflict("Instamart claim changed.");
     },
-    instamartClaimed: (cart: string) =>
-      (db.prepare("SELECT revision FROM instamart_prepared WHERE cart=?").get(cart) as { revision: string } | undefined)?.revision,
-    isOwner(id: string, authorization: string | undefined): boolean {
+    instamartClaimed: async (cart: string) =>
+      (await q<{revision: string}>("SELECT revision FROM instamart_prepared WHERE cart = $1", cart)).rows[0]?.revision,
+    async isOwner(id: string, authorization: string | undefined): Promise<boolean> {
       const token = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization ?? "")?.[1];
-      return !!token && !!db.prepare("SELECT 1 FROM owner_keys WHERE household = ? AND hash = ?")
-        .get(id, createHash("sha256").update(token).digest("hex"));
+      return !!token && !!(await q("SELECT 1 FROM owner_keys WHERE household = $1 AND hash = $2",
+        id, createHash("sha256").update(token).digest("hex"))).rowCount;
     },
-    saveHousehold: (h: Household) => void db.prepare("UPDATE households SET data = ? WHERE id = ?").run(JSON.stringify(h), h.id),
+    saveHousehold: async (h: Household) => void await q("UPDATE households SET data = $1 WHERE id = $2", JSON.stringify(h), h.id),
 
     /** Stores the call; its cards are stored separately with addAction. */
-    addCall(call: CallResult, householdId: string, at: string) {
+    async addCall(call: CallResult, householdId: string, at: string) {
       const extraction = call.extraction as typeof call.extraction & {stockouts?: string[]};
       for (const item of extraction.stockouts ?? []) {
-        const receipt = db.prepare(`SELECT id,data FROM actions WHERE household=? AND data->>'$.tracking.state'='delivered'
-          AND data->>'$.tracking.deliveredAt'<=? AND EXISTS (
-            SELECT 1 FROM json_each(COALESCE(data->'$.tracking.receipt.lines', CASE WHEN NOT EXISTS (
-              SELECT 1 FROM instamart_prepared WHERE cart=actions.id) THEN data->'$.card.cart.lines' END))
-            WHERE value->>'$.item'=?)
-          ORDER BY data->>'$.tracking.deliveredAt' DESC LIMIT 1`).get(householdId, at, item) as {id:string;data:string}|undefined;
+        const receipt = (await q<{id: string; data: string}>(`SELECT id, data FROM actions
+          WHERE household = $1 AND data::jsonb #>> '{tracking,state}' = 'delivered'
+          AND (data::jsonb #>> '{tracking,deliveredAt}') COLLATE "C" <= $2 AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(COALESCE(data::jsonb #> '{tracking,receipt,lines}', CASE WHEN NOT EXISTS (
+              SELECT 1 FROM instamart_prepared WHERE cart = actions.id) THEN data::jsonb #> '{card,cart,lines}' END)) AS line
+            WHERE line ->> 'item' = $3)
+          ORDER BY (data::jsonb #>> '{tracking,deliveredAt}') COLLATE "C" DESC LIMIT 1`, householdId, at, item)).rows[0];
         if (!receipt) continue;
         const entry: Entry = JSON.parse(receipt.data);
         if (entry.card.type !== "cart") continue;
@@ -184,134 +213,134 @@ export function openStore(path = ":memory:", { recoverInterruptedOrders = false 
         const quantity = purchasedQuantity(bought);
         if (!quantity) continue;
         const days = (Date.parse(at) - Date.parse(entry.tracking!.deliveredAt!)) / 86_400_000;
-        db.prepare("INSERT OR IGNORE INTO usage_samples VALUES (?,?,?,?,?,?)").run(householdId,receipt.id,item,quantity.qty,quantity.unit,days);
+        await q("INSERT INTO usage_samples (household, receipt, item, qty, unit, days) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+          householdId, receipt.id, item, quantity.qty, quantity.unit, days);
       }
       const items = [...new Set(extraction.groceries.map(l => l.item))];
-      const usage = items.flatMap(item => db.prepare(`SELECT item,qty,unit,ROUND(AVG(days),1) AS days,COUNT(*) AS samples
-        FROM usage_samples WHERE household=? AND item=? GROUP BY qty,unit ORDER BY MAX(rowid) DESC LIMIT 1`).all(householdId,item));
-      db.prepare("INSERT INTO calls VALUES (?, ?, ?, ?)").run(call.callId, householdId, at, JSON.stringify({
+      const usage = (await Promise.all(items.map(async item => (await q(`SELECT item, qty, unit,
+          round(avg(days)::numeric, 1)::float8 AS days, count(*)::int AS samples
+        FROM usage_samples WHERE household = $1 AND item = $2 GROUP BY item, qty, unit ORDER BY max(seq) DESC LIMIT 1`, householdId, item)).rows))).flat();
+      await q("INSERT INTO calls (id, household, at, data) VALUES ($1, $2, $3, $4)", call.callId, householdId, at, JSON.stringify({
         ...call, ...(usage.length && {usage}), actions: [],
       }));
     },
-    call(id: string): StoredCall | undefined {
-      const row = db.prepare("SELECT data, at FROM calls WHERE id = ?").get(id) as CallRow | undefined;
+    async call(id: string): Promise<StoredCall | undefined> {
+      const row = (await q<CallRow>("SELECT data, at FROM calls WHERE id = $1", id)).rows[0];
       return row && toStored(row);
     },
     /** Newest → oldest, all of them or the last `limit`. ponytail: one query per call; fine at demo sizes. */
-    calls: (householdId: string, limit = -1) =>
-      (db.prepare("SELECT data, at FROM calls WHERE household = ? ORDER BY rowid DESC LIMIT ?").all(householdId, limit) as CallRow[]).map(toStored),
+    calls: async (householdId: string, limit?: number) =>
+      Promise.all((await q<CallRow>("SELECT data, at FROM calls WHERE household = $1 ORDER BY seq DESC LIMIT $2", householdId, limit ?? null)).rows.map(toStored)),
 
-    action: (id: string) => one<Entry>("SELECT data FROM actions WHERE id = ?", id),
+    action: (id: string) => one<Entry>("SELECT data FROM actions WHERE id = $1", id),
     /** Appends the card to its call's actions, or puts it first. */
-    addAction(e: Entry, { first = false } = {}) {
+    async addAction(e: Entry, { first = false } = {}) {
       const pos = first ? "COALESCE(MIN(pos), 0) - 1" : "COALESCE(MAX(pos), 0) + 1";
-      if (e.card.type === "cart" && e.callId && e.card.cart.lines.length && alerts.hasDevice(e.householdId)) {
-        const call = one<CallResult & { extraction: { neededBy?: string } }>("SELECT data FROM calls WHERE id=?",e.callId);
+      if (e.card.type === "cart" && e.callId && e.card.cart.lines.length && await alerts.hasDevice(e.householdId)) {
+        const call = await one<CallResult & { extraction: { neededBy?: string } }>("SELECT data FROM calls WHERE id = $1", e.callId);
         const reminder = Date.parse(call?.extraction.neededBy ?? "") - 30 * 60_000;
         if (reminder > Date.now()) {
           e.tracking = {...e.tracking, remindAt: new Date(reminder).toISOString()};
-          alerts.queue(e.householdId, e.card.id, "reminder", reminder);
+          await alerts.queue(e.householdId, e.card.id, "reminder", reminder);
         }
       }
-      db.prepare(`INSERT INTO actions SELECT ?, ?, ?, ${pos}, ? FROM actions WHERE call IS ?`)
-        .run(e.card.id, e.householdId, e.callId ?? null, JSON.stringify({ ...e, at: new Date().toISOString() }), e.callId ?? null);
-      if (e.card.type === "cart" && e.callId && e.card.cart.lines.length) alerts.queue(e.householdId, e.card.id, "ready", Date.now());
+      await q(`INSERT INTO actions (id, household, call, pos, data)
+        SELECT $1::text, $2::text, $3::text, ${pos}, $4::text FROM actions WHERE call IS NOT DISTINCT FROM $3::text`,
+        e.card.id, e.householdId, e.callId ?? null, JSON.stringify({ ...e, at: new Date().toISOString() }));
+      if (e.card.type === "cart" && e.callId && e.card.cart.lines.length) await alerts.queue(e.householdId, e.card.id, "ready", Date.now());
     },
     /** Confirmed orders that can start now, including immediate orders interrupted before claiming. */
     dueOrders: (now: string) =>
-      (db.prepare(`SELECT data FROM actions WHERE data ->> '$.card.type' = 'order' AND data ->> '$.card.order.status' = 'scheduled'
-        AND data ->> '$.done' AND NOT IFNULL(data ->> '$.placing', 0)
-        AND (data ->> '$.card.order.scheduledFor' IS NULL OR data ->> '$.card.order.scheduledFor' <= ?)`).all(now) as Row[])
-        .map((r) => JSON.parse(r.data) as Entry),
+      many<Entry>(`SELECT data FROM actions WHERE data::jsonb #>> '{card,type}' = 'order'
+        AND data::jsonb #>> '{card,order,status}' = 'scheduled' AND (data::jsonb ->> 'done')::boolean
+        AND NOT COALESCE((data::jsonb ->> 'placing')::boolean, false)
+        AND (data::jsonb #>> '{card,order,scheduledFor}' IS NULL OR (data::jsonb #>> '{card,order,scheduledFor}') COLLATE "C" <= $1)`, now),
     /** Cards with no call (meal plans, the carts they make), newest first. */
     looseActions: (householdId: string) =>
-      (db.prepare("SELECT data FROM actions WHERE household = ? AND call IS NULL ORDER BY rowid DESC").all(householdId) as Row[]).map((r) => JSON.parse(r.data) as Entry),
-    saveAction: (e: Entry) => void db.prepare("UPDATE actions SET data = ? WHERE id = ?").run(JSON.stringify(e), e.card.id),
+      many<Entry>("SELECT data FROM actions WHERE household = $1 AND call IS NULL ORDER BY seq DESC", householdId),
+    saveAction: async (e: Entry) => void await q("UPDATE actions SET data = $1 WHERE id = $2", JSON.stringify(e), e.card.id),
 
-    confirmOrder(id: string) {
-      db.prepare("UPDATE actions SET data=json_set(data,'$.done',json('true')) WHERE id=? AND NOT(data->>'$.done')").run(id);
-      return store.action(id)!;
-    },
-    claimOrder(id: string) {
-      return db.prepare(`UPDATE actions SET data=json_set(data,'$.placing',json('true')) WHERE id=? AND data->>'$.done'
-        AND data->>'$.card.order.status'='scheduled' AND NOT IFNULL(data->>'$.placing',0)`).run(id).changes === 1;
-    },
+    // Locks the row until the transaction ends, so concurrent writers on other instances wait.
+    lockedAction: (id: string) => one<Entry>("SELECT data FROM actions WHERE id = $1 FOR UPDATE", id),
+    lockedHousehold: (id: string) => one<Household>("SELECT data FROM households WHERE id = $1 FOR UPDATE", id),
+
+    confirmOrder: (id: string) => tx(async () => {
+      const entry = (await store.lockedAction(id))!;
+      if (!entry.done) {
+        entry.done = true;
+        await store.saveAction(entry);
+      }
+      return entry;
+    }),
+    /** true for the one caller that gets to place this order. */
+    claimOrder: (id: string) => tx(async () => {
+      const entry = await store.lockedAction(id);
+      if (!entry?.done || entry.card.type !== "order" || entry.card.order.status !== "scheduled" || entry.placing) return false;
+      entry.placing = true;
+      await store.saveAction(entry);
+      return true;
+    }),
     finishOrder(entry: Entry) {
       if (entry.card.type !== "order") throw new Error("Expected an order");
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const current = store.action(entry.card.id);
+      return tx(async () => {
+        const current = await store.lockedAction(entry.card.id);
         if (current?.card.type === "order" && current.placing && current.card.order.status === "scheduled") {
           // Pre-review orders already updated household history when their source cart was approved.
-          if (entry.card.order.status === "placed" && !current.refreshedBill && reviewOf(current.card.order.cart).reviewId) {
-            const household = store.household(entry.householdId)!;
+          if (entry.card.type === "order" && entry.card.order.status === "placed" && !current.refreshedBill && reviewOf(current.card.order.cart).reviewId) {
+            const household = (await store.lockedHousehold(entry.householdId))!;
             household.history.push({at: new Date().toISOString().slice(0,10), lines: historyLines(manualReceipt(entry.card.order.cart))});
-            store.saveHousehold(household);
+            await store.saveHousehold(household);
           }
           delete entry.placing;
-          store.saveAction(entry);
+          await store.saveAction(entry);
         }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     confirmPurchase(entry: Entry, receipt: GroceryReceipt) {
       if (entry.card.type !== "cart") throw new Error("Expected a grocery cart");
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const current = store.action(entry.card.id);
-        if (!current || current.card.type !== "cart" || cartRevision(current.card.cart) !== cartRevision(entry.card.cart) ||
+      return tx(async () => {
+        const current = await store.lockedAction(entry.card.id);
+        if (!current || current.card.type !== "cart" || entry.card.type !== "cart" || cartRevision(current.card.cart) !== cartRevision(entry.card.cart) ||
             current.tracking?.state === "delivered" || (current.done && current.tracking?.receipt?.receiptId !== receipt.receiptId) ||
             (!current.done && receipt.source === "instamart" &&
-             store.instamartReceipt(entry.card.id, cartRevision(current.card.cart))?.receiptId !== receipt.receiptId)) {
-          throw Object.assign(new Error("Purchase changed. Review it again."), {status: 409});
+             (await store.instamartReceipt(entry.card.id, cartRevision(current.card.cart)))?.receiptId !== receipt.receiptId)) {
+          throw conflict("Purchase changed. Review it again.");
         }
         if (!current.done) {
-          const household = store.household(entry.householdId)!;
-          household.history.push({at: new Date().toISOString().slice(0,10), lines:historyLines(receipt)});
-          store.saveHousehold(household);
+          const household = (await store.lockedHousehold(entry.householdId))!;
+          household.history.push({at: new Date().toISOString().slice(0,10), lines: historyLines(receipt)});
+          await store.saveHousehold(household);
         }
         entry.done = true;
-        store.saveAction(entry);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+        await store.saveAction(entry);
+      });
     },
 
     /** Drops the fixture household's calls and actions and restores its fixture data. */
-    resetDemo() {
-      db.prepare("DELETE FROM usage_samples WHERE household = ?").run(householdJson.id);
-      db.prepare("DELETE FROM calls WHERE household = ?").run(householdJson.id);
-      db.prepare("DELETE FROM actions WHERE household = ?").run(householdJson.id);
-      store.saveHousehold(householdJson as Household);
-    },
+    resetDemo: () => tx(async () => {
+      await q("DELETE FROM usage_samples WHERE household = $1", householdJson.id);
+      await q("DELETE FROM calls WHERE household = $1", householdJson.id);
+      await q("DELETE FROM actions WHERE household = $1", householdJson.id);
+      await store.saveHousehold(householdJson as Household);
+    }),
   };
-  store.addHousehold(householdJson as Household, DEMO_CODE); // no-op once seeded
-  // Rows from before pack review need current prices and a stable revision for the confirmation screen.
-  const oldBills = db.prepare(`SELECT data FROM actions WHERE household = ? AND NOT data->>'$.done' AND (
-    (data->>'$.card.type' = 'cart' AND data->>'$.card.cart.reviewId' IS NULL) OR
-    (data->>'$.card.type' = 'order' AND data->>'$.card.order.cart.reviewId' IS NULL))`).all(householdJson.id) as Row[];
-  if (oldBills.length) {
-    const household = store.household(householdJson.id)!;
-    for (const row of oldBills) {
-      const entry = JSON.parse(row.data) as Entry;
-      const card = entry.card;
-      if (card.type === "cart") {
-        entry.refreshedBill = true;
-        card.cart = priceCart(requestsFromCart(card.cart), household);
-        card.needsApproval = card.cart.total > household.approvalLimit;
-      } else if (card.type === "order") {
-        entry.refreshedBill = true;
-        card.order.cart = priceCart(requestsFromCart(card.order.cart), household);
+  await store.addHousehold(householdJson as Household, DEMO_CODE); // no-op once seeded
+  if (recoverInterruptedOrders) {
+    // The checkout runner has restarted. The previous attempt may have reached the provider.
+    // ponytail: assumes one checkout runner; a second instance booting mid-checkout fails that order. Store a claim time and expire old claims when scaling out.
+    // Edited in JS, not jsonb_set, so the stored JSON keeps its key order (cart revisions hash it).
+    await tx(async () => {
+      for (const e of await many<Entry>(`SELECT data FROM actions WHERE data::jsonb #>> '{card,type}' = 'order'
+          AND data::jsonb #>> '{card,order,status}' = 'scheduled' AND (data::jsonb ->> 'done')::boolean
+          AND COALESCE((data::jsonb ->> 'placing')::boolean, false) FOR UPDATE`)) {
+        if (e.card.type !== "order") continue;
+        e.card.order.status = "failed";
+        delete e.placing;
+        await store.saveAction(e);
       }
-      db.prepare("UPDATE actions SET data = ? WHERE id = ? AND data = ?").run(JSON.stringify(entry), card.id, row.data);
-    }
+    });
   }
   return store;
 }
-export type Store = ReturnType<typeof openStore>;
+export type Store = Awaited<ReturnType<typeof openStore>>;

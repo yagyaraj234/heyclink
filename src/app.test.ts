@@ -30,40 +30,13 @@ const fakeStt = (seen: { path?: string; bytes?: string } = {}): Stt => ({
 });
 
 async function serve(stt: Stt = fakeStt(), deps: Partial<AppDeps> = {}) {
-  const server = createApp({ processCall, stt, llm: fakeLlm, ...deps }).listen(0);
+  const server = createApp({ processCall, stt, llm: fakeLlm, ...deps, store: deps.store ?? (await openStore()) }).listen(0);
   await new Promise((r) => server.once("listening", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const post = (path: string, body?: unknown) =>
     fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
   return { base, post, close: () => new Promise((r) => server.close(r)) };
 }
-
-test("pending demo carts and orders saved before review IDs get a current bill on restart", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "vfi-old-carts-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, "legacy.db");
-  const before = openStore(file);
-  const cart = { platform: "mock" as const, total: 7, lines: [
-    { item: "eggs", qty: 6, unit: "piece" as const, price: 7, searchUrl: "old" },
-  ] };
-  before.addAction({ householdId: "h1", done: false, card: { id: "legacy-cart", type: "cart", cart, needsApproval: false } });
-  before.addAction({ householdId: "h1", done: false, card: { id: "legacy-order", type: "order", order: { cart, status: "scheduled" }, needsApproval: true } });
-  const { base, post, close } = await serve(fakeStt(), { store: openStore(file) });
-  t.after(close);
-  const feed = await (await fetch(base + "/households/h1/actions")).json();
-  const updatedCart = feed.find((e: {card: ActionCard}) => e.card.id === "legacy-cart").card.cart;
-  const updatedOrder = feed.find((e: {card: ActionCard}) => e.card.id === "legacy-order").card.order.cart;
-  for (const bill of [updatedCart, updatedOrder]) {
-    assert.ok(bill.reviewId);
-    assert.equal(bill.total, 48);
-    assert.deepEqual(bill.lines[0].pack, { count: 1, size: 6, unit: "piece" });
-  }
-  assert.equal((await post("/actions/legacy-cart/approve", { order: "now" })).status, 409);
-  assert.equal((await post("/actions/legacy-cart/approve", { order: "now", reviewId: updatedCart.reviewId })).status, 200);
-  assert.equal((await post("/actions/legacy-order/approve")).status, 409);
-  const placed = await post("/actions/legacy-order/approve", { reviewId: updatedOrder.reviewId });
-  assert.equal((await placed.json()).order.status, "placed");
-});
 
 test("POST /calls with a transcript returns cards; approving them pays and updates memory", async (t) => {
   const { base, post, close } = await serve();
@@ -135,7 +108,7 @@ test("answering a question 'yes' adds the line to the call's cart and recomputes
     ],
     notes: [],
   });
-  const server = createApp({ processCall, stt: fakeStt(), llm: unsureLlm }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm: unsureLlm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -163,7 +136,7 @@ test("answering a question 'yes' adds the line to the call's cart and recomputes
 
 test("answering 'yes' when every line was unsure creates an approvable cart card", async (t) => {
   const llm = llmReplying({ groceries: [{ raw: "woh atta", item: "atta", qty: 2, unit: "kg", confidence: 0.4 }], notes: [] });
-  const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -183,7 +156,7 @@ test("answering 'yes' when every line was unsure creates an approvable cart card
 });
 
 test("CORS: preflight and responses allow the web origin", async (t) => {
-  const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, corsOrigin: "https://web.example" }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm: fakeLlm, corsOrigin: "https://web.example" }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -248,7 +221,7 @@ test("serves the built web UI from webDir; API routes win over same-named files"
   writeFileSync(join(webDir, "index.html"), "<!doctype html><title>vfi</title>");
   writeFileSync(join(webDir, "households", "h1"), "static-shadow");
   writeFileSync(join(webDir, "calls"), "static-shadow");
-  const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, webDir }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm: fakeLlm, webDir }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => {
     server.close();
@@ -293,7 +266,7 @@ test("GET /calls and /calls/:id carry a per-action status map that survives relo
     advance: { amount: 500 },
     notes: [],
   });
-  const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -315,7 +288,7 @@ test("GET /calls and /calls/:id carry a per-action status map that survives relo
 });
 
 test("GET /health names the STT provider and LLM model and nothing else", async (t) => {
-  const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, health: { stt: "sarvam", llm: "gpt-test" } }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm: fakeLlm, health: { stt: "sarvam", llm: "gpt-test" } }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/health`);
@@ -335,7 +308,7 @@ test("POST /calls?mode=plain runs the base model without household context and s
       return { text: "do kilo atta aur paanch sau advance", lang: "hi", provider: "fake" };
     },
   };
-  const server = createApp({ processCall, stt, llm }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt, llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -385,7 +358,7 @@ test("a fuzzy word becomes a which-one question; the chosen item joins the cart,
       notes: [],
     }) as T,
   };
-  const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
+  const server = createApp({ store: await openStore(), processCall, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -420,7 +393,7 @@ test("POST /calls hands processCall the household's last 5 calls as recent conte
   const reply = llmReplying({ groceries: [{ raw: "do kilo atta", item: "atta", qty: 2, unit: "kg", confidence: 1 }], notes: [] });
   const llm: Llm = { json: async (req) => (prompts.push(req.user), reply.json(req)) };
   const tracking: ProcessCall = (input, household, ports, options) => (seen.push(options?.recent), processCall(input, household, ports, options));
-  const server = createApp({ processCall: tracking, stt: fakeStt(), llm }).listen(0);
+  const server = createApp({ store: await openStore(), processCall: tracking, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -513,9 +486,12 @@ test("POST /households rejects bad input with 400", async (t) => {
 });
 
 test("a restart on the same database keeps households, join codes, calls and approvals", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "vfi-db-"));
-  t.after(() => rmSync(dir, { recursive: true }));
-  const boot = () => serve(fakeStt(), { store: openStore(join(dir, "vfi.db")) });
+  let schema: string | undefined;
+  const boot = async () => {
+    const store = await openStore({ schema });
+    schema = store.schema;
+    return serve(fakeStt(), { store });
+  };
 
   const before = await boot();
   const { id, cookCode, ownerToken } = (await (await before.post("/households", signup)).json()) as { id: string; cookCode: string; ownerToken: string };
@@ -771,7 +747,7 @@ test("household signup gives only the owner a private connection credential", as
 });
 
 test('owner receives a cart-ready push for a cook call without leaking the device token', async (t) => {
-  const store = openStore();
+  const store = await openStore();
   const {post, base, close} = await serve(fakeStt(), {store});
   t.after(close);
   const owner = await (await post('/households', signup)).json();
@@ -792,7 +768,7 @@ test('owner receives a cart-ready push for a cook call without leaking the devic
 });
 
 test('a single requested reminder stops after owner marks the purchase; delivery remains visible to the cook', async (t) => {
-  const store = openStore();
+  const store = await openStore();
   const {post, base, close} = await serve(fakeStt(), {store});
   t.after(close);
   const owner = await (await post('/households', signup)).json();
@@ -820,31 +796,31 @@ test('a single requested reminder stops after owner marks the purchase; delivery
 });
 
 test('the next cook request shows how long the previous delivered quantity lasted', async (t) => {
-  const store = openStore();
+  const store = await openStore();
   const llm = llmReplying({notes:[], groceries:[{item:"onion",raw:"pyaaz",unit:"kg",qty:1,confidence:1}]});
   const {post, close} = await serve(fakeStt(), {store,llm});
   t.after(close);
   const delivered = {id:'onion-delivery', type:'cart', needsApproval:false, cart:{platform:'mock',total:44,lines:[
     {item:'onion',qty:1,unit:'kg',price:44,searchUrl:''}
   ]}} satisfies ActionCard;
-  store.addAction({householdId:'h1', done:true, card:delivered,
+  await store.addAction({householdId:'h1', done:true, card:delivered,
     tracking:{state:'delivered',deliveredAt:'2026-01-01T10:00:00.000Z'}});
   const extraction = {groceries:[],notes:[],stockouts:['onion']};
   const empty: CallResult = {callId:'recorded-note',transcript:{text:'pyaaz khatam',lang:'hi',provider:'fake'},actions:[],
     timings:{totalMs:0,sttMs:0,extractMs:0,planMs:0},extraction};
-  store.addCall(empty,'h1','2026-01-06T10:00:00.000Z');
-  store.addCall({...empty,callId:'repeated-note'},'h1','2026-01-07T10:00:00.000Z');
+  await store.addCall(empty,'h1','2026-01-06T10:00:00.000Z');
+  await store.addCall({...empty,callId:'repeated-note'},'h1','2026-01-07T10:00:00.000Z');
   const call = await (await post('/calls',{householdId:'h1',transcript:case01.transcript})).json();
   assert.deepEqual(call.usage, [{item:'onion',qty:1,unit:'kg',days:5,samples:1}]);
 });
 
 test('manual purchase requires the owner to confirm the same cart revision they reviewed', async (t) => {
-  const store = openStore();
+  const store = await openStore();
   const {post, base, close} = await serve(fakeStt(), {store});
   t.after(close);
   const owner = await (await post('/households', signup)).json();
   const cart = {platform:'mock',total:22,lines:[{item:'onion',qty:500,unit:'g',price:22,searchUrl:''}],reviewId:'v2'} as const;
-  store.addAction({householdId:owner.id,done:false,card:{type:'cart',id:'updated',needsApproval:true,cart:{...cart,lines:[...cart.lines]}}});
+  await store.addAction({householdId:owner.id,done:false,card:{type:'cart',id:'updated',needsApproval:true,cart:{...cart,lines:[...cart.lines]}}});
   const purchase = (reviewId: string) => fetch(base+'/actions/updated/tracking', {method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+owner.ownerToken},body:JSON.stringify({state:'ordered',reviewId})});
   assert.equal((await purchase('v1')).status,409);
   assert.equal((await purchase('v2')).status,200);
@@ -889,7 +865,7 @@ function requestHandoff(base:string, card:Extract<ActionCard,{type:"cart"}>, own
 }
 
 test("only the signed-up owner can open a cart for an Instamart OAuth session", async (t) => {
-  const store=openStore();
+  const store = await openStore();
   const { post, base, close } = await serve(undefined, {store,
     instamart: { origin: "https://kitchen.example", clientId: "kitchen" },
   });
@@ -903,10 +879,10 @@ test("only the signed-up owner can open a cart for an Instamart OAuth session", 
   assert.equal((await post(path)).status, 403);
   const open = (key:string) => requestHandoff(base, card, key);
   // Older stored carts might already carry an owner-review marker from the cart lane.
-  const saved=store.action(card.id)!;
+  const saved=(await store.action(card.id))!;
   assert.ok(saved.card.type==="cart");
   Object.assign(saved.card.cart,{reviewId:"current-review"});
-  store.saveAction(saved);
+  await store.saveAction(saved);
   assert.equal((await requestHandoff(base,card,owner.ownerToken,"outdated")).status,409);
   Object.assign(card.cart,{reviewId:"current-review"});
   assert.equal((await open(other.ownerToken)).status, 403);
