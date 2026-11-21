@@ -96,7 +96,9 @@ const cases: [string, number, Unit][] = [
   ["तीन गड्डी", 3, "bunch"],
   ["तीन गड्डियाँ", 3, "bunch"],
   ["aara kilo", 0.5, "kg"],
+  ["ara kilo", 0.5, "kg"],
   ["paavu kilo", 0.25, "kg"],
+  ["pavu kilo", 0.25, "kg"],
   ["అర కిలో", 0.5, "kg"],
   ["పావు కిలో", 0.25, "kg"],
   ["అరకిలో", 0.5, "kg"],
@@ -116,6 +118,7 @@ const cases: [string, number, Unit][] = [
   ["ఐదు ప్యాకెట్లు", 5, "packet"],
   ["పది ప్యాకెట్లు", 10, "packet"],
   ["రెండు ప్యాకెట్\u200cలు", 2, "packet"],
+  ["rendu packetlu", 2, "packet"],
   ["మూడు చిన్న సంచులో", 3, "packet"],
   // Telugu cardinals.
   ["ఒకటి కిలో", 1, "kg"],
@@ -165,6 +168,7 @@ const cases: [string, number, Unit][] = [
   ["వెయ్యి నూట పదకొండు గ్రాముల", 1111, "g"],
   // Telugu fractions and units.
   ["ముప్పావు కిలో", 0.75, "kg"],
+  ["mukkal kilo", 0.75, "kg"],
   ["ఒకటిన్నర కిలో", 1.5, "kg"],
   ["రెండున్నర కిలో", 2.5, "kg"],
   ["ముప్పావుకిలో", 0.75, "kg"],
@@ -180,6 +184,7 @@ const cases: [string, number, Unit][] = [
   ["వంద మిల్లీ లీటర్లు", 100, "ml"],
   ["అరడజను", 0.5, "dozen"],
   ["ఒక డజను", 1, "dozen"],
+  ["oka dozen", 1, "dozen"],
   ["రెండు డజన్లు", 2, "dozen"],
   ["ఒక ముక్క", 1, "piece"],
   ["పన్నెండు ముక్కలు", 12, "piece"],
