@@ -5,12 +5,12 @@ const aliases: Record<string, string> = {
   maida: "मैदा",
   besan: "बेसन",
   sooji: "suji|rawa|rava|सूजी|रवा",
-  rice: "chawal|chaawal|चावल",
+  rice: "chawal|chaawal|चावल|biyyam|బియ్యం",
   "basmati-rice": "basmati|basmati chawal|बासमती|बासमती चावल",
   poha: "पोहा",
   dalia: "daliya|दलिया",
   "ragi-flour": "ragi ka atta|ragi atta|रागी का आटा",
-  "toor-dal": "tur dal|tuvar dal|arhar dal|तूर दाल|तुअर दाल|अरहर दाल",
+  "toor-dal": "tur dal|tuvar dal|arhar dal|तूर दाल|तुअर दाल|अरहर दाल|kandi pappu|కందిపప్పు|కంది పప్పు",
   "moong-dal": "mung dal|मूंग दाल|मूँग दाल",
   "masoor-dal": "masur dal|malka dal|मसूर दाल|मलका दाल",
   "chana-dal": "चना दाल",
@@ -18,21 +18,21 @@ const aliases: Record<string, string> = {
   rajma: "राजमा",
   "kabuli-chana": "chole|safed chana|काबुली चना|छोले|सफेद चना",
   "kala-chana": "काला चना",
-  onion: "pyaaz|pyaz|pyaj|pyaaj|kanda|प्याज़|कांदा|काँदा",
-  potato: "aloo|alu|आलू",
+  onion: "pyaaz|pyaz|pyaj|pyaaj|kanda|प्याज़|कांदा|काँदा|ullipaya|ఉల్లిపాయ|ఉల్లిపాయలు",
+  potato: "aloo|alu|आलू|bangaladumpa|బంగాళాదుంప|బంగాళాదుంపలు",
   tomato: "tamatar|tamaatar|टमाटर",
   garlic: "lahsun|lehsun|lasun|लहसुन",
   ginger: "adrak|अदरक",
-  "green-chilli": "hari mirch|hari mirchi|hara mirch|हरी मिर्च|हरी मिर्ची",
-  coriander: "dhaniya|dhania|hara dhaniya|dhaniya patta|धनिया|हरा धनिया|धनिये के पत्ते",
+  "green-chilli": "hari mirch|hari mirchi|hara mirch|हरी मिर्च|हरी मिर्ची|pacchi mirchi|పచ్చిమిర్చి|పచ్చి మిర్చి",
+  coriander: "dhaniya|dhania|hara dhaniya|dhaniya patta|धनिया|हरा धनिया|धनिये के पत्ते|kothimeera|కొత్తిమీర",
   mint: "pudina|पुदीना",
-  "curry-leaves": "kadi patta|kadipatta|curry patta|कड़ी पत्ता|करी पत्ता",
+  "curry-leaves": "kadi patta|kadipatta|curry patta|कड़ी पत्ता|करी पत्ता|karivepaku|కరివేపాకు",
   lemon: "nimbu|neembu|नींबू|नीम्बू",
   cucumber: "kheera|khira|खीरा",
   carrot: "gajar|gaajar|गाजर",
   cabbage: "patta gobhi|patta gobi|band gobhi|पत्ता गोभी|पत्तागोभी|बंद गोभी",
   cauliflower: "phool gobhi|phool gobi|फूल गोभी|फूलगोभी",
-  brinjal: "baingan|baigan|eggplant|बैंगन",
+  brinjal: "baingan|baigan|eggplant|बैंगन|vankaya|వంకాయ",
   okra: "bhindi|भिंडी|भिण्डी",
   "bottle-gourd": "lauki|doodhi|ghiya|लौकी|दूधी|घिया",
   "bitter-gourd": "karela|करेला",
@@ -59,8 +59,8 @@ const aliases: Record<string, string> = {
   mango: "aam|आम",
   watermelon: "tarbooz|tarbuj|तरबूज",
   guava: "amrud|amrood|अमरूद",
-  milk: "doodh|dudh|दूध",
-  curd: "dahi|dahii|yogurt|दही",
+  milk: "doodh|dudh|दूध|paalu|పాలు",
+  curd: "dahi|dahii|yogurt|दही|perugu|పెరుగు",
   paneer: "panir|पनीर",
   butter: "makhan|makkhan|मक्खन",
   ghee: "ghi|घी",
@@ -70,12 +70,12 @@ const aliases: Record<string, string> = {
   eggs: "anda|ande|egg|अंडा|अंडे|अण्डे",
   bread: "ब्रेड",
   pav: "paav|पाव",
-  salt: "namak|नमक",
+  salt: "namak|नमक|uppu|ఉప్పు",
   sugar: "chini|cheeni|चीनी",
   jaggery: "gud|gur|गुड़",
   tea: "chai|chai patti|चाय|चाय पत्ती",
   coffee: "कॉफी",
-  turmeric: "haldi|हल्दी",
+  turmeric: "haldi|हल्दी|pasupu|పసుపు",
   "red-chilli-powder": "lal mirch powder|laal mirch powder|लाल मिर्च पाउडर",
   "coriander-powder": "dhaniya powder|dhania powder|धनिया पाउडर",
   "cumin-seeds": "jeera|jira|जीरा",
@@ -100,7 +100,7 @@ const aliases: Record<string, string> = {
   peanuts: "moongfali|mungfali|groundnuts|मूंगफली|मूँगफली",
   cashew: "kaju|काजू",
   almonds: "badam|badaam|बादाम",
-  raisins: "kishmish|किशमिश",
+  raisins: "kishmish|किशमिश|kismis|కిస్మిస్|కిస్మిస్ పళ్ళు",
   coconut: "nariyal|नारियल",
   tamarind: "imli|इमली",
   vermicelli: "seviyan|sewai|सेवई|सेवइयां|सेवइयाँ",
@@ -138,7 +138,7 @@ export const STT_KEYWORDS: string[] = [
 ];
 
 function normalize(raw: string): string {
-  return raw.normalize().toLowerCase().replace(/\u093c/gu, "")
+  return raw.normalize().toLowerCase().replace(/[\u093c\u200c\u200d]/gu, "")
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim();
 }
 
@@ -149,6 +149,28 @@ for (const id of itemIds) {
 
 for (const id of itemIds) lexicon.set(normalize(id), id);
 
+function oneEditApart(shorter: string, longer: string): boolean {
+  if (shorter.length > longer.length) return oneEditApart(longer, shorter);
+  if (longer.length - shorter.length > 1) return false;
+
+  let index = 0;
+  while (index < shorter.length && shorter[index] === longer[index]) index++;
+  const skip = shorter.length === longer.length ? 1 : 0;
+  return shorter.slice(index + skip) === longer.slice(index + 1);
+}
+
 export function resolveItem(raw: string): string | null {
-  return lexicon.get(normalize(raw)) ?? null;
+  const key = normalize(raw);
+  const exact = lexicon.get(key);
+  if (exact) return exact;
+  if (key.length < 5) return null;
+
+  let match: string | null = null;
+  for (const [alias, id] of lexicon) {
+    // Keep the edges exact to avoid treating a distinct word like "makhana" as "makhan".
+    if (alias[0] !== key[0] || alias.at(-1) !== key.at(-1) || !oneEditApart(key, alias)) continue;
+    if (match !== null && match !== id) return null;
+    match = id;
+  }
+  return match;
 }
