@@ -1,5 +1,7 @@
-import type { Household, Llm, Macros, MealChoice, MealPlan, Weekday } from "../contracts.ts";
-import { WEEKDAYS } from "../contracts.ts";
+import type { GroceryLine, Household, Llm, Macros, MealChoice, MealPlan, Unit, Weekday } from "../contracts.ts";
+import { UNITS, WEEKDAYS } from "../contracts.ts";
+import ITEMS from "../../fixtures/items.json" with { type: "json" };
+import { buildCart } from "../actions/cart.ts";
 
 const DAY_NAMES: Record<Weekday, string> = { sun: "Sunday", mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday" };
 
@@ -9,7 +11,7 @@ interface LlmMeal {
   macros: Macros;
 }
 interface LlmPlan {
-  cook: { meals: (LlmMeal & { steps: string[] })[] };
+  cook: { meals: (LlmMeal & { steps: string[]; ingredients: { item: string; qty: number; unit: Unit }[] })[] };
   order: { meals: LlmMeal[] };
 }
 
@@ -28,7 +30,13 @@ const meal = {
 };
 
 export const MEAL_SCHEMA = obj({
-  cook: obj({ meals: { type: "array", items: obj({ ...meal, steps: { type: "array", items: { type: "string" }, description: "3-5 short recipe steps for the cook" } }) } }),
+  cook: obj({ meals: { type: "array", items: obj({ ...meal, steps: { type: "array", items: { type: "string" }, description: "3-5 short recipe steps for the cook" },
+    ingredients: {
+      type: "array",
+      items: obj({ item: { type: "string", enum: ITEMS }, qty: num, unit: { type: "string", enum: UNITS } }),
+      description: "catalog ingredients to buy for the whole family; skip salt, water and spices not in the list",
+    },
+  }) } }),
   order: obj({ meals: { type: "array", items: obj(meal) }, }, "dishes easy to order from a restaurant"),
 });
 
@@ -56,6 +64,19 @@ function suggest(h: Household, day: Weekday): { suggested: MealChoice; reason: s
   return { suggested, reason: reason.charAt(0).toUpperCase() + reason.slice(1) || `Plan for ${DAY_NAMES[day]}` };
 }
 
+/** Ingredients summed per item and unit, minus what the pantry already holds. */
+function shoppingLines(plan: LlmPlan, h: Household): GroceryLine[] {
+  const sum = new Map<string, GroceryLine>();
+  for (const { item, qty, unit } of plan.cook.meals.flatMap((m) => m.ingredients)) {
+    if ((h.pantry[item]?.qty ?? 0) > 0) continue; // ponytail: any stock counts as enough
+    const key = `${item}|${unit}`; // ponytail: 500 g and 1 kg of one item stay two lines
+    const line = sum.get(key);
+    if (line) line.qty += qty;
+    else sum.set(key, { raw: item, item, qty, unit, confidence: 1 });
+  }
+  return [...sum.values()];
+}
+
 export async function planMeals(household: Household, date: string, ports: { llm: Llm }): Promise<MealPlan> {
   const day = weekday(date);
   const out = await ports.llm.json<LlmPlan>({
@@ -67,7 +88,7 @@ export async function planMeals(household: Household, date: string, ports: { llm
   return {
     date,
     ...suggest(household, day),
-    cook: { meals: out.cook.meals.map(({ slot, dish, macros, steps }) => ({ slot, dish, macros, steps })), cart: { lines: [], total: 0, platform: household.platform } },
+    cook: { meals: out.cook.meals.map(({ slot, dish, macros, steps }) => ({ slot, dish, macros, steps })), cart: await buildCart(shoppingLines(out, household), household) },
     order: { meals: out.order.meals.map(({ slot, dish, macros }) => ({ slot, dish, macros })) },
   };
 }
