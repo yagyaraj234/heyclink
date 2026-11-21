@@ -26,7 +26,8 @@ function packs(qty: number, unit: Unit, entry: CatalogEntry): number {
 }
 
 export function searchUrl(name: string, brand?: string): string {
-  const q = `${brand ? brand.replaceAll("-", " ") + " " : ""}${name}`.toLowerCase();
+  // "Jeera (Cumin Seeds)" → "jeera": the bracketed English gloss only adds noise to a store search.
+  const q = `${brand ? brand.replaceAll("-", " ") + " " : ""}${name.replace(/\s*\(.*?\)/g, "")}`.toLowerCase();
   return `https://www.swiggy.com/instamart/search?query=${encodeURIComponent(q)}`;
 }
 

@@ -104,3 +104,14 @@ test("buildCart prices brand ids as extraction emits them (Tata tea and dal are 
   assert.deepEqual(cart.lines.map((l) => l.price), [270, 189]);
   assert.equal(cart.lines[0]?.searchUrl, "https://www.swiggy.com/instamart/search?query=tata%20tea");
 });
+
+test("buildCart search links drop the catalog's bracketed gloss: 'Jeera (Cumin Seeds)' searches 'jeera'", async () => {
+  const cart = await buildCart([
+    { raw: "dhai sau gram jeera", item: "cumin-seeds", qty: 250, unit: "g", confidence: 1 },
+    { raw: "aadha kilo bhindi", item: "okra", qty: 500, unit: "g", confidence: 1 },
+  ], household());
+  assert.deepEqual(cart.lines.map((l) => l.searchUrl), [
+    "https://www.swiggy.com/instamart/search?query=jeera",
+    "https://www.swiggy.com/instamart/search?query=bhindi",
+  ]);
+});
