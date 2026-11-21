@@ -4,6 +4,7 @@ import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
+import { catalog } from "../actions/cart.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -65,7 +66,7 @@ export const EXTRACTION_SCHEMA = {
 
 const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telugu) into a grocery order for their employer.
 - One grocery line per item requested. "item" must be one of the allowed ids.
-- qty/unit: the spoken quantity as a number and unit.
+- qty/unit: the spoken quantity as a number and unit. Never 0: for a vague amount ("thoda", "thoda sa", "kuch") use one usual pack or bunch.
 - brand: only when said, or when the cook means the usual one ("wahi wala", "same as last time", "jo hamesha aata hai") — then use the household's preferred brand for that item. Otherwise null.
 - confidence: 0..1, how sure you are of item AND quantity. Below 0.6 when either is a guess (vague "thoda", "woh wala" with no known preference, garbled words); the employer is then asked to confirm.
 - advance: money the cook asks for themselves (salary advance), in INR. null if none.
@@ -126,6 +127,13 @@ function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
     unit: q?.unit ?? l.unit,
     confidence: l.confidence,
   };
+  if (!(line.qty > 0)) {
+    // vague amount ("thoda sa palak") came back as 0: offer one pack and ask (planActions asks below 0.6)
+    const pack = catalog[item];
+    line.qty = pack?.packSize ?? 1;
+    line.unit = pack?.unit ?? "packet";
+    line.confidence = Math.min(line.confidence, 0.5);
+  }
   if (brand) line.brand = brand.trim().toLowerCase().replace(/\s+/g, "-");
   return [line];
 }

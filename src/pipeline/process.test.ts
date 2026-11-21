@@ -252,3 +252,27 @@ test("processCall: an ingredient named while narrating a recipe is not bought (c
   // strict structured outputs: the model must always answer whether the line was asked for
   assert.match(JSON.stringify(calls[0]!.schema), /"required":\["raw","requested"/);
 });
+
+test("processCall: vague 'thoda sa palak' with qty 0 becomes a one-bunch question, never a 0 g ₹0 line", async () => {
+  const { stt } = fakeStt("Didi thoda sa palak le aana aur do kilo aloo", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "thoda sa palak", requested: true, itemWord: "palak", qtyPhrase: "thoda sa", item: "spinach", qty: 0, unit: "g", brand: null, confidence: 0.7 },
+      { raw: "do kilo aloo", requested: true, itemWord: "aloo", qtyPhrase: "do kilo", item: "potato", qty: 2, unit: "kg", brand: null, confidence: 1 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  const palak = res.extraction.groceries[0]!;
+  assert.deepEqual([palak.item, palak.qty, palak.unit], ["spinach", 1, "bunch"]);
+  const cart = res.actions[0]!;
+  assert.ok(cart.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => l.item), ["potato"]);
+  const question = res.actions.find((a) => a.type === "question");
+  assert.ok(question?.type === "question");
+  assert.match(question.text, /1 bunch Palak/);
+  assert.doesNotMatch(question.text, /\b0 /);
+});
