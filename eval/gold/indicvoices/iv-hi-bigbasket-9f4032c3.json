@@ -1,0 +1,21 @@
+{
+  "id": "iv-hi-bigbasket-9f4032c3",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "क्या दो सौ ग्राम बी बी पॉप्युलर बेकरी कुकीज़ की कीमत सौ रुपये से कम है",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "",
+        "item": "biscuits",
+        "qty": 200,
+        "unit": "g",
+        "confidence": 1,
+        "brand": "bb-popular"
+      }
+    ],
+    "notes": [
+      "क्या दो सौ ग्राम बी बी पॉप्युलर बेकरी कुकीज़ की कीमत सौ रुपये से कम है"
+    ]
+  }
+}

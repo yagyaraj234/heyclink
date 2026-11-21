@@ -1,0 +1,12 @@
+{
+  "id": "iv-hi-bigbasket-2cb5ea24",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "अभी तीन पैकेट एगो पोटैटो चिप्स किस कीमत पर बेचा जा रहा है",
+  "gold": {
+    "groceries": [],
+    "notes": [
+      "किस कीमत पर बेचा जा रहा है"
+    ]
+  }
+}

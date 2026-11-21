@@ -1,0 +1,21 @@
+{
+  "id": "iv-te-bigbasket-3cdd5b59",
+  "source": "eswardivi/IndicVoices telugu_train Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "te",
+  "transcript": "నా కార్టులో విన్‍గ్రీన్ ఫామ్ కెమొమాయిల్ పూలు గల గ్రీన్ టీ తీసివేసి దానికి బదులు వెయ్యి గ్రాముల స్లర్ప్ ఫర్మ్ ఇంస్టంట్ ఓట్స్ పౌడర్ వేయి",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "వెయ్యి గ్రాముల స్లర్ప్ ఫర్మ్ ఇంస్టంట్ ఓట్స్ పౌడర్",
+        "item": "oats",
+        "qty": 1000,
+        "unit": "g",
+        "confidence": 1,
+        "brand": "slurrp-farm"
+      }
+    ],
+    "notes": [
+      "నా కార్టులో విన్‍గ్రీన్ ఫామ్ కెమొమాయిల్ పూలు గల గ్రీన్ టీ తీసివేసి దానికి బదులు"
+    ]
+  }
+}

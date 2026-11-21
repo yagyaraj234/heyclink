@@ -1,0 +1,21 @@
+{
+  "id": "iv-te-bigbasket-5430e654",
+  "source": "eswardivi/IndicVoices telugu_train Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "te",
+  "transcript": " సున్నాపాయింట్ ఐదు కిలో బీబీ రాయల్ కిస్‍మిస్ పళ్ళు ధర ఎంత",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "",
+        "item": "raisins",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1,
+        "brand": "bb-royal"
+      }
+    ],
+    "notes": [
+      "ధర ఎంత"
+    ]
+  }
+}

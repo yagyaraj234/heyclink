@@ -1,0 +1,21 @@
+{
+  "id": "iv-hi-bigbasket-359176b7",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "मैं अपनी ख़रीदारी की सूची में दो सौ पचास ग्राम चौबीस मंत्रा कांदा पोहा और एक बॉटल सनसिल्क बादाम और शहद कंडिशनर जोड़ना चाहता हूँ",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "दो सौ पचास ग्राम चौबीस मंत्रा कांदा पोहा",
+        "item": "poha",
+        "qty": 250,
+        "unit": "g",
+        "confidence": 1,
+        "brand": "24-mantra"
+      }
+    ],
+    "notes": [
+      "एक बॉटल सनसिल्क बादाम और शहद कंडिशनर"
+    ]
+  }
+}
