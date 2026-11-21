@@ -3,6 +3,7 @@ import type { CallInput, CallResult, Extraction, GroceryLine, Household, Lang, L
 import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveItem } from "./indic-stub.ts";
+import { planActions } from "../actions/plan.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -61,6 +62,7 @@ const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telug
 - One grocery line per item requested. "item" must be one of the allowed ids.
 - qty/unit: the spoken quantity as a number and unit.
 - brand: only when said, or when the cook means the usual one ("wahi wala", "same as last time", "jo hamesha aata hai") — then use the household's preferred brand for that item. Otherwise null.
+- confidence: 0..1, how sure you are of item AND quantity. Below 0.6 when either is a guess (vague "thoda", "woh wala" with no known preference, garbled words); the employer is then asked to confirm.
 - advance: money the cook asks for themselves (salary advance), in INR. null if none.
 - notes: anything else worth telling the employer that is not a purchase, verbatim and short (e.g. "kal 8 baje aaungi"). Mentions that something is running low without asking to buy it go in notes, not groceries.`;
 
@@ -122,7 +124,8 @@ export async function processCall(input: CallInput, household: Household, ports:
   const t1 = performance.now();
   const extraction = await processTranscript(transcript.text, transcript.lang, household, ports, options);
   const t2 = performance.now();
-  const actions: CallResult["actions"] = []; // lane 2 wires planActions here
+  // question cards follow unsure-line order in `extraction`; POST /actions/:id/answer relies on it
+  const actions = await planActions(extraction, household);
   const t3 = performance.now();
   return {
     callId: randomUUID(),

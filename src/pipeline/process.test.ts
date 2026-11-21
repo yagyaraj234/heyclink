@@ -46,7 +46,7 @@ test("processCall: cook note → gold extraction, household context to both port
 
   assert.deepEqual(res.extraction, case01.gold);
   assert.equal(res.transcript.text, case01.transcript);
-  assert.deepEqual(res.actions, []);
+  assert.deepEqual(res.actions.map((a) => a.type), ["cart", "advance"]);
   assert.ok(res.callId);
   // STT is biased toward this household's brands
   assert.ok(sttCalls[0]!.keywords.includes("aashirvaad"));
@@ -83,4 +83,26 @@ test("processCall with harness off (eval baseline): no household context reaches
   assert.doesNotMatch(calls[0]!.user, /aashirvaad|india-gate|diabetic/);
   assert.deepEqual(sttCalls[0]!.keywords, []);
   assert.doesNotMatch(calls[0]!.system, /dedh|gaddi/); // qty rules are harness too
+});
+
+test("processCall: unsure lines become question cards in the order they were heard", async () => {
+  const { stt } = fakeStt("atta do kilo, thoda methi, aur woh tel", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "atta do kilo", itemWord: "atta", qtyPhrase: "do kilo", item: "atta", qty: 2, unit: "kg", brand: null, confidence: 0.95 },
+      { raw: "thoda methi", itemWord: "methi", qtyPhrase: "thoda", item: "methi", qty: 1, unit: "bunch", brand: null, confidence: 0.4 },
+      { raw: "woh tel", itemWord: "tel", qtyPhrase: "", item: "mustard-oil", qty: 1, unit: "l", brand: null, confidence: 0.3 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.actions.map((a) => a.type), ["cart", "question", "question"]);
+  const questions = res.actions.flatMap((a) => (a.type === "question" ? [a.text] : []));
+  assert.match(questions[0]!, /thoda methi/);
+  assert.match(questions[1]!, /woh tel/);
+  const cart = res.actions[0]!;
+  assert.ok(cart.type === "cart" && cart.cart.lines.length === 1 && cart.cart.lines[0]!.item === "atta");
 });
