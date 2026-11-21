@@ -13,3 +13,4 @@ fixtures/cases/*.wav
 fixtures/cases/*.m4a
 fixtures/cases/*.ogg
 fixtures/cases/*.mp3
+.data/

@@ -5,10 +5,11 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIETS, GOALS, LANGS, WEEKDAYS } from "./contracts.ts";
-import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
+import type { CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
-import householdJson from "../fixtures/household.json" with { type: "json" };
+import { fixtureHousehold, openStore } from "./actions/store.ts";
+import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
 /** Lane 1's processCall (src/pipeline/process.ts) satisfies this; tests inject it with fake ports. */
 export type ProcessCall = (
@@ -22,6 +23,7 @@ export interface AppDeps {
   corsOrigin?: string; // default "*": the API has no cookies or auth
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
   health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
+  store?: Store; // default: a fresh in-memory database
 }
 
 // STT providers sniff format from the file extension. The header is client input: anything but a plain token → "bin".
@@ -68,21 +70,11 @@ function parseSignup(body: unknown): Signup | string {
   };
 }
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" } }: AppDeps) {
-  // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
-  const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
-  const codes = new Map<string, string>(); // cook join code → householdId
-  const calls = new Map<string, CallResult>();
-  const callHousehold = new Map<string, string>(); // callId → householdId; CallResult doesn't carry it
-  const callAt = new Map<string, string>(); // callId → ISO time it was stored
-  // done = approved (cart/advance) or answered (question). lines = what the cart is built from.
-  // choices = per question option, the line it adds to the cart (null = adds nothing).
-  type Entry = { card: ActionCard; callId: string; householdId: string; done: boolean; lines?: GroceryLine[]; choices?: (GroceryLine | null)[] };
-  const actions = new Map<string, Entry>();
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore() }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
-  const withStatus = (call: CallResult) => ({
+  const withStatus = ({ call, entries }: StoredCall) => ({
     ...call,
-    status: Object.fromEntries(call.actions.map((a) => [a.id, !actions.get(a.id)?.done ? "pending" : a.type === "question" ? "answered" : "approved"])),
+    status: Object.fromEntries(entries.map((e) => [e.card.id, !e.done ? "pending" : e.card.type === "question" ? "answered" : "approved"])),
   });
 
   const app = express();
@@ -105,7 +97,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const isAudio = Buffer.isBuffer(req.body);
     const body: { householdId?: unknown; transcript?: unknown; lang?: unknown } = isAudio ? {} : (req.body ?? {});
     const householdId = String(req.query.householdId ?? body.householdId ?? "");
-    const household = households.get(householdId);
+    const household = store.household(householdId);
     if (!household) return void res.status(404).json({ error: `unknown household "${householdId}"` });
     const lang: Lang | undefined = LANGS.find((l) => l === (req.query.lang ?? body.lang));
     // mode=plain: the base model (no household context, STT keywords or indic pass) for side-by-side demos.
@@ -115,8 +107,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     // harness only: the household's last calls, oldest → newest, so "woh wala" can refer back to them
     const options = mode !== "harness" ? { harness: false } : {
       harness: true,
-      recent: [...calls.values()].filter((c) => callHousehold.get(c.callId) === householdId).slice(-RECENT).map((c): RecentCall => ({
-        at: callAt.get(c.callId)!,
+      recent: store.calls(householdId).slice(-RECENT).map(({ call: c, at }): RecentCall => ({
+        at,
         transcript: c.transcript.text,
         lines: c.extraction.groceries.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
       })),
@@ -147,9 +139,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     // Plain results are for comparison only: never stored, so their cards can't be approved.
     if (!options.harness) return void res.json({ ...result, status: {} });
 
-    calls.set(result.callId, result);
-    callHousehold.set(result.callId, householdId);
-    callAt.set(result.callId, new Date().toISOString());
+    store.addCall(result, householdId, new Date().toISOString());
     const { callId, extraction } = result;
     // question cards: unsure lines ("Yes, add it" | "No, skip"), then ambiguous words (candidates… | Skip); see planActions
     const choices: (GroceryLine | null)[][] = [
@@ -164,41 +154,43 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const entry: Entry = { card, callId, householdId, done: false };
       if (card.type === "cart") entry.lines = extraction.groceries.filter((l) => !isUnsure(l));
       if (card.type === "question") entry.choices = choices[q++];
-      actions.set(card.id, entry);
+      store.addAction(entry);
     }
-    res.status(201).json(withStatus(result));
+    res.status(201).json(withStatus(store.call(callId)!));
   });
 
   app.get("/calls", (req, res) => {
     const householdId = String(req.query.householdId ?? "");
-    if (!households.has(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
-    // ponytail: O(all calls) scan; fine for an in-memory demo.
-    res.json([...calls.values()].filter((c) => callHousehold.get(c.callId) === householdId).reverse().map(withStatus));
+    if (!store.household(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
+    res.json(store.calls(householdId).reverse().map(withStatus));
   });
 
   app.get("/calls/:id", (req, res) => {
-    const call = calls.get(req.params.id);
-    if (!call) return void res.status(404).json({ error: "unknown call" });
-    res.json(withStatus(call));
+    const stored = store.call(req.params.id);
+    if (!stored) return void res.status(404).json({ error: "unknown call" });
+    res.json(withStatus(stored));
   });
 
   app.post("/actions/:id/approve", (req, res) => {
-    const entry = actions.get(req.params.id);
+    const entry = store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
     if (card.type === "question") return void res.status(400).json({ error: "questions are answered, not approved" });
-    if (!entry.done && card.type === "cart") {
-      households.get(entry.householdId)?.history.push({
+    const household = store.household(entry.householdId);
+    if (!entry.done && card.type === "cart" && household) {
+      household.history.push({
         at: new Date().toISOString().slice(0, 10),
         lines: card.cart.lines.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
       });
+      store.saveHousehold(household);
     }
     entry.done = true;
+    store.saveAction(entry);
     res.json({ status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) });
   });
 
   app.post("/actions/:id/answer", async (req, res) => {
-    const entry = actions.get(req.params.id);
+    const entry = store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card, choices } = entry;
     if (card.type !== "question" || !choices) return void res.status(400).json({ error: "only questions can be answered" });
@@ -210,21 +202,23 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const line = choices[card.options.indexOf(option)];
     if (!line) {
       entry.done = true;
+      store.saveAction(entry);
       return void res.json({ status: "answered" });
     }
 
-    const call = calls.get(entry.callId)!;
-    const cartEntry = call.actions.map((a) => actions.get(a.id)!).find((e) => e.card.type === "cart");
+    const { callId, householdId } = entry;
+    const cartEntry = store.call(callId!)!.entries.find((e) => e.card.type === "cart");
     if (cartEntry?.done) return void res.status(409).json({ error: "cart already approved" });
     const lines = [...(cartEntry?.lines ?? []), line];
-    const fresh = await cartCard(lines, households.get(entry.householdId)!);
+    const fresh = await cartCard(lines, store.household(householdId)!);
     entry.done = true;
+    store.saveAction(entry);
     if (cartEntry) {
       Object.assign(cartEntry.card, { cart: fresh.cart, needsApproval: fresh.needsApproval });
       cartEntry.lines = lines;
+      store.saveAction(cartEntry);
     } else {
-      call.actions.unshift(fresh);
-      actions.set(fresh.id, { card: fresh, callId: entry.callId, householdId: entry.householdId, done: false, lines });
+      store.addAction({ card: fresh, callId, householdId, done: false, lines }, { first: true });
     }
     res.json({ status: "answered", cart: cartEntry?.card ?? fresh });
   });
@@ -233,39 +227,31 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const parsed = parseSignup(req.body);
     if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
     const id = randomUUID();
+    const household: Household = { id, ...parsed, pantry: {}, platform: "mock", history: [] };
     let cookCode: string;
     do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
-    while (codes.has(cookCode));
-    households.set(id, { id, ...parsed, pantry: {}, platform: "mock", history: [] });
-    codes.set(cookCode, id);
+    while (!store.addHousehold(household, cookCode));
     res.status(201).json({ id, cookCode });
   });
 
   app.post("/join", (req, res) => {
-    const householdId = codes.get(String(req.body?.code ?? "").trim().toUpperCase());
-    const household = householdId && households.get(householdId);
+    const householdId = store.householdIdByCode(String(req.body?.code ?? "").trim().toUpperCase());
+    const household = householdId && store.household(householdId);
     if (!household) return void res.status(404).json({ error: "unknown code" });
     res.json({ householdId, role: "cook", cook: { name: household.cook.name, lang: household.cook.lang } });
   });
 
   app.get("/households/:id", (req, res) => {
-    const household = households.get(req.params.id);
+    const household = store.household(req.params.id);
     if (!household) return void res.status(404).json({ error: "unknown household" });
     res.json(household);
   });
 
   // ponytail: unauthenticated, like the rest of the demo API; anyone with the URL can reset h1.
   app.post("/households/:id/reset", (req, res) => {
-    const id = req.params.id;
-    if (!households.has(id)) return void res.status(404).json({ error: "unknown household" });
-    households.set(id, structuredClone(householdJson) as Household); // only h1 exists, and it comes from the fixture
-    for (const [callId, hid] of callHousehold) {
-      if (hid !== id) continue;
-      calls.delete(callId);
-      callHousehold.delete(callId);
-      callAt.delete(callId);
-    }
-    for (const [actionId, e] of actions) if (e.householdId === id) actions.delete(actionId);
+    const fixture = fixtureHousehold();
+    if (req.params.id !== fixture.id) return void res.status(404).json({ error: "only the demo household can be reset" });
+    store.reset(fixture);
     res.json({ status: "reset" });
   });
 
