@@ -9,6 +9,7 @@ import case01 from "../fixtures/cases/cook-hinglish-01.json" with { type: "json"
 import { createApp } from "./app.ts";
 import type { ProcessCall } from "./app.ts";
 import { processCall } from "./pipeline/process.ts";
+import { openStore } from "./actions/store.ts";
 
 // Fakes only for the Stt/Llm ports. The Llm replies in the pipeline's extraction-schema shape.
 const llmReplying = (ex: Extraction): Llm => ({
@@ -482,4 +483,46 @@ test("POST /households rejects bad input with 400", async (t) => {
     ["unknown diet", { ...signup, goals: { goal: "lose", diet: "vegan" } }],
   ];
   for (const [why, body] of bad) assert.equal((await post("/households", body)).status, 400, why);
+});
+
+test("a restart on the same database keeps households, join codes, calls and approvals", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "vfi-db-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const boot = async () => {
+    const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, store: openStore(join(dir, "vfi.db")) }).listen(0);
+    await new Promise((r) => server.once("listening", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const post = (path: string, body?: unknown) =>
+      fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    return { base, post, close: () => new Promise((r) => server.close(r)) };
+  };
+
+  const before = await boot();
+  const { id, cookCode } = (await (await before.post("/households", signup)).json()) as { id: string; cookCode: string };
+  const first = (await (await before.post("/calls", { transcript: "pehli", householdId: id })).json()) as CallResult;
+  const second = (await (await before.post("/calls", { transcript: "doosri", householdId: id })).json()) as CallResult;
+  const [cart, advance] = first.actions;
+  await before.post(`/actions/${cart!.id}/approve`);
+  await before.close();
+
+  const after = await boot();
+  t.after(after.close);
+  const h = (await (await fetch(`${after.base}/households/${id}`)).json()) as Household;
+  assert.equal(h.cook.name, "Sunita");
+  assert.equal(h.history.length, 1);
+  assert.deepEqual(await (await after.post("/join", { code: cookCode })).json(), { householdId: id, role: "cook", cook: { name: "Sunita", lang: "hi" } });
+
+  type WithStatus = CallResult & { status: Record<string, string> };
+  const list = (await (await fetch(`${after.base}/calls?householdId=${id}`)).json()) as WithStatus[];
+  assert.deepEqual(list.map((c) => c.transcript.text), ["doosri", "pehli"]);
+  assert.deepEqual(list[1]!.status, { [cart!.id]: "approved", [advance!.id]: "pending" });
+  assert.deepEqual(list[0]!.actions, second.actions);
+  assert.deepEqual(await (await after.post(`/actions/${advance!.id}/approve`)).json(), {
+    status: "approved",
+    upiUrl: "upi://pay?pa=sunita@okicici&pn=Sunita&am=500&cu=INR&tn=Advance",
+  });
+
+  // the fixture household is seeded once, not reset by a restart, and has a fixed demo code
+  assert.equal(((await (await fetch(`${after.base}/households/h1`)).json()) as Household).id, "h1");
+  assert.deepEqual(await (await after.post("/join", { code: "TADKA2" })).json(), { householdId: "h1", role: "cook", cook: { name: "Lakshmi", lang: "hi" } });
 });

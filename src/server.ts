@@ -1,4 +1,7 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { createApp } from "./app.ts";
+import { openStore } from "./actions/store.ts";
 import { processCall } from "./pipeline/process.ts";
 import { openaiLlm } from "./pipeline/adapters/openai-llm.ts";
 import { openaiStt } from "./pipeline/adapters/openai-stt.ts";
@@ -15,8 +18,12 @@ const stt = sttProviders[provider as keyof typeof sttProviders]();
 
 const llmModel = process.env.OPENAI_LLM_MODEL || "gpt-6-luna"; // passed explicitly so /health reports what runs
 
+const dataDir = process.env.DATA_DIR || ".data";
+mkdirSync(dataDir, { recursive: true });
+const store = openStore(join(dataDir, "vfi.db"));
+
 const port = Number(process.env.PORT ?? 3000);
 const corsOrigin = process.env.CORS_ORIGIN || "*";
-createApp({ processCall, stt, llm: openaiLlm(llmModel), corsOrigin, health: { stt: provider, llm: llmModel } }).listen(port, () =>
+createApp({ processCall, stt, llm: openaiLlm(llmModel), corsOrigin, health: { stt: provider, llm: llmModel }, store }).listen(port, () =>
   console.log(`voice-for-india on :${port} (stt=${provider}, llm=${llmModel}, cors=${corsOrigin})`),
 );
