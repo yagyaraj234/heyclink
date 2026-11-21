@@ -578,7 +578,7 @@ test("POST /households/:id/meal-plan defaults to tomorrow in India", async (t) =
 test("approving a cart with { order } creates an order card; approving that places it now or leaves it for the scheduler", async (t) => {
   const { base, post, close } = await serve();
   t.after(close);
-  type OrderCard = Extract<ActionCard, { type: "order" }>;
+  type OrderCard = Extract<ActionCard, { type: "order" }> & { order: { cart: { reviewId: string } } };
   const newCart = async () => ((await (await post("/calls", { transcript: case01.transcript, householdId: "h1" })).json()) as CallResult);
 
   const call = await newCart();
@@ -597,19 +597,19 @@ test("approving a cart with { order } creates an order card; approving that plac
   const after = (await (await fetch(`${base}/calls/${call.callId}`)).json()) as CallResult;
   assert.deepEqual(after.actions.map((a) => a.type), ["cart", "advance", "order"]);
 
-  const placed = (await (await post(`/actions/${res.order.id}/approve`)).json()) as { status: string; order: OrderCard["order"] };
+  const placed = (await (await post(`/actions/${res.order.id}/approve`, { reviewId: res.order.order.cart.reviewId })).json()) as { status: string; order: OrderCard["order"] };
   assert.equal(placed.status, "approved");
   assert.equal(placed.order.status, "placed");
   assert.equal(placed.order.cart.platform, "mock");
   assert.match(placed.order.orderId ?? "", /^mock-/);
-  const again = (await (await post(`/actions/${res.order.id}/approve`)).json()) as { order: OrderCard["order"] };
+  const again = (await (await post(`/actions/${res.order.id}/approve`, { reviewId: res.order.order.cart.reviewId })).json()) as { order: OrderCard["order"] };
   assert.equal(again.order.orderId, placed.order.orderId); // approving twice doesn't order twice
 
   // a time: confirmed, but placed later by runDue; the time is stored in UTC
   const later = await newCart();
   const sched = (await (await post(`/actions/${later.actions[0]!.id}/approve`, { order: "2026-11-23T08:00:00+05:30" })).json()) as { order: OrderCard };
   assert.equal(sched.order.order.scheduledFor, "2026-11-23T02:30:00.000Z");
-  const confirmed = (await (await post(`/actions/${sched.order.id}/approve`)).json()) as { status: string; order: OrderCard["order"] };
+  const confirmed = (await (await post(`/actions/${sched.order.id}/approve`, { reviewId: sched.order.order.cart.reviewId })).json()) as { status: string; order: OrderCard["order"] };
   assert.deepEqual([confirmed.status, confirmed.order.status], ["approved", "scheduled"]);
 });
 
@@ -632,4 +632,94 @@ test("GET /households/:id/actions lists cards outside any call, newest first, wi
   assert.ok(times.every((ms, i) => !Number.isNaN(ms) && (i === 0 || ms <= times[i - 1]!)));
 
   assert.equal((await fetch(`${base}/households/nope/actions`)).status, 404);
+});
+
+test("cook clarifies excess onions while safe packs reach the owner immediately", async (t) => {
+  const groceries: Extraction["groceries"] = [
+    { raw: "onions", item: "onion", qty: 1.5, unit: "kg", confidence: 1 },
+    { raw: "more onions", item: "onion", qty: 1, unit: "kg", confidence: 1 },
+  ];
+  const { post, close } = await serve(fakeStt(), { llm: llmReplying({ groceries, notes: [] }) });
+  t.after(close);
+  const call = await (await post("/calls", { householdId: "h1", transcript: "onions" })).json();
+  assert.deepEqual(call.actions.map((a: ActionCard) => a.type), ["cart", "question"]);
+  const [cart, question] = call.actions;
+  assert.equal(cart.cart.total, 66);
+  assert.deepEqual(question.options, ["Add 500 g", "Skip"]);
+  assert.equal(question.prompt.options.length, 2);
+  const response = await post(`/actions/${question.id}/answer`, { option: question.options[0] });
+  assert.equal(response.status, 200);
+  const accepted = await response.json();
+  assert.equal(accepted.cart.cart.total, 88);
+  assert.deepEqual(accepted.cart.cart.held, []);
+});
+
+test("an owner edits the cart, reviews its new bill, and confirms exactly that order", async (t) => {
+  const { post, close } = await serve();
+  t.after(close);
+  const call = await (await post("/calls", { transcript: case01.transcript, householdId: "h1" })).json();
+  const original = call.actions[0];
+  assert.equal(typeof original.cart.reviewId, "string");
+  const edit = { reviewId: original.cart.reviewId, edits: [{ index: 0, qty: 1, unit: "kg" }, { index: 1, qty: 0, unit: "bunch" }] };
+  const edited = await post(`/actions/${original.id}/review`, edit);
+  assert.equal(edited.status, 200);
+  const { cart } = await edited.json();
+  assert.equal(cart.cart.total, 100);
+  assert.deepEqual(cart.cart.lines.map((l: {item: string}) => l.item), ["atta", "milk"]);
+  assert.equal((await post(`/actions/${original.id}/approve`, { order: "now", reviewId: original.cart.reviewId })).status, 409);
+  const response = await post(`/actions/${cart.id}/approve`, { order: "now", reviewId: cart.cart.reviewId });
+  const { order } = await response.json();
+  assert.equal((await post(`/actions/${order.id}/approve`, {})).status, 409);
+  assert.equal((await post(`/actions/${order.id}/approve`, { reviewId: original.cart.reviewId })).status, 409);
+  assert.equal((await (await post(`/actions/${order.id}/approve`, { reviewId: cart.cart.reviewId })).json()).order.status, "placed");
+});
+
+test("a clarification that would introduce bulk asks for a safe quantity instead", async (t) => {
+  const { post, close } = await serve(fakeStt(), { llm: llmReplying({ groceries: [
+    { item: "onion", raw: "onion", qty: 5, unit: "kg", confidence: 0.3 },
+  ], notes: [] }) });
+  t.after(close);
+  const call = await (await post("/calls", { householdId: "h1", transcript: "onion" })).json();
+  const [question] = call.actions;
+  const reply = await post(`/actions/${question.id}/answer`, { option: "Yes, add it" });
+  assert.equal(reply.status, 422);
+  const { question: next } = await reply.json();
+  assert.deepEqual(next.options, ["Add 500 g", "Skip"]);
+  const fixed = await (await post(`/actions/${next.id}/answer`, { option: "Add 500 g" })).json();
+  assert.equal(fixed.cart.cart.total, 22);
+});
+
+test("a spoken cook reply resolves only an explicit choice and leaves unclear answers pending", async (t) => {
+  let text = "maybe";
+  const stt: Stt = { transcribe: async () => ({ text, lang: "hi", provider: "fake" }) };
+  const { base, post, close } = await serve(stt, { llm: llmReplying({ groceries: [
+    { raw: "thoda methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.3 },
+  ], notes: [] }) });
+  t.after(close);
+  const call = await (await post("/calls", { householdId: "h1", transcript: "methi" })).json();
+  const url = `${base}/actions/${call.actions[0].id}/answer`;
+  const speak = () => fetch(url, {method: "POST", headers: {"content-type": "audio/mp4"}, body: "recording"});
+  assert.equal((await speak()).status, 422);
+  text = "हाँ।";
+  const response = await speak();
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).cart.cart.total, 18);
+});
+
+test("choosing a meal plan with a bulk ingredient asks the cook and rebuilds its standalone cart", async (t) => {
+  const llm: Llm = { json: async <T>() => ({
+    cook: { meals: [{ slot: "lunch", dish: "Roti", macros: mealMacros, steps: ["Knead"], ingredients: [{ item: "atta", qty: 8, unit: "kg" }] }] },
+    order: { meals: [] },
+  }) as T };
+  const { base, post, close } = await serve(fakeStt(), { llm });
+  t.after(close);
+  const meal = await (await post("/households/h1/meal-plan")).json();
+  const reply = await (await post(`/actions/${meal.id}/answer`, { option: "cook" })).json();
+  assert.equal(reply.cart.cart.lines.length, 0);
+  const feed = await (await fetch(base + "/households/h1/actions")).json();
+  const entry = feed.find((e: {card: ActionCard}) => e.card.type === "question");
+  assert.ok(entry, "cook must be able to correct the ingredient quantity");
+  const answered = await (await post(`/actions/${entry.card.id}/answer`, { option: "Add 1 kg" })).json();
+  assert.equal(answered.cart.id, reply.cart.id);
+  assert.equal(answered.cart.cart.total, 66);
 });

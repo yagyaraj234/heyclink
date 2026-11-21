@@ -4,9 +4,10 @@ import { randomInt, randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIETS, GOALS, LANGS, MEAL_CHOICES, WEEKDAYS } from "./contracts.ts";
-import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
-import { cartCard, isUnsure } from "./actions/plan.ts";
+import { DIETS, GOALS, LANGS, MEAL_CHOICES, UNITS, WEEKDAYS } from "./contracts.ts";
+import type { ActionCard, CallInput, CallResult, Household, Lang, Llm, Stt } from "./contracts.ts";
+import { matchesHouseholdBill, priceCart, requestsFromCart, reviewOf } from "./actions/cart.ts";
+import { groceryPlan, quantityQuestion, spokenOption } from "./actions/plan.ts";
 import { planMeals } from "./pipeline/meals.ts";
 import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
@@ -39,6 +40,16 @@ const extFor = (contentType = "") => {
   const ext = EXT[sub] ?? sub;
   return /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 };
+
+async function withAudio<T>(req: Request, read: (path: string) => Promise<T>): Promise<T> {
+  const path = join(tmpdir(), `vfi-${randomUUID()}.${extFor(req.get("content-type"))}`);
+  try {
+    await writeFile(path, req.body);
+    return await read(path);
+  } finally {
+    await rm(path, { force: true });
+  }
+}
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I: codes get read out loud
 
@@ -124,13 +135,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     let result: CallResult;
     if (isAudio) {
       if (!req.body.length) return void res.status(400).json({ error: "empty audio body" });
-      const audioPath = join(tmpdir(), `vfi-${randomUUID()}.${extFor(req.get("content-type"))}`);
-      await writeFile(audioPath, req.body);
-      try {
-        result = await processCall({ audioPath, householdId, lang }, ctx, { stt, llm }, options);
-      } finally {
-        await rm(audioPath, { force: true });
-      }
+      result = await withAudio(req, audioPath => processCall({ audioPath, householdId, lang }, ctx, { stt, llm }, options));
     } else {
       const text = body.transcript;
       if (typeof text !== "string" || !text.trim()) {
@@ -145,19 +150,15 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
 
     store.addCall(result, householdId, new Date().toISOString());
     const { callId, extraction } = result;
-    // question cards: unsure lines ("Yes, add it" | "No, skip"), then ambiguous words (candidates… | Skip); see planActions
-    const choices: (GroceryLine | null)[][] = [
-      ...extraction.groceries.filter(isUnsure).map((l) => [l, null]),
-      ...((extraction as ExtractionWithAmbiguous).ambiguous ?? []).map(({ raw, qty, unit, candidates }) => [
-        ...candidates.map((item) => ({ raw, item, qty, unit, confidence: 1 })),
-        null,
-      ]),
-    ];
+    const { questions } = groceryPlan(extraction as ExtractionWithAmbiguous, ctx);
     let q = 0;
     for (const card of result.actions) {
       const entry: Entry = { card, callId, householdId, done: false };
-      if (card.type === "cart") entry.lines = extraction.groceries.filter((l) => !isUnsure(l));
-      if (card.type === "question") entry.choices = choices[q++];
+      if (card.type === "question") {
+        const question = questions[q++];
+        entry.choices = question?.choices;
+        entry.heldIndex = question?.heldIndex;
+      }
       store.addAction(entry);
     }
     res.status(201).json(withStatus(store.call(callId)!));
@@ -180,6 +181,35 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.json(withStatus(stored));
   });
 
+  app.post("/actions/:id/review", (req, res) => {
+    const entry = store.action(req.params.id);
+    if (!entry || entry.card.type !== "cart") return void res.status(404).json({ error: "unknown cart" });
+    const { card } = entry;
+    const current = reviewOf(card.cart);
+    if (entry.done || current.reviewId !== req.body?.reviewId) return void res.status(409).json({ error: "Reload the latest cart before editing." });
+    const edits: unknown = req.body?.edits;
+    if (!Array.isArray(edits) || !edits.length) return void res.status(400).json({ error: "Cart edits required." });
+    const lines = requestsFromCart(current);
+    const changed = new Set<number>();
+    for (const edit of edits) {
+      if (!edit || !Number.isInteger(edit.index) || !lines[edit.index] || changed.has(edit.index) ||
+          !num(edit.qty) || !oneOf(UNITS, edit.unit)) return void res.status(400).json({ error: "Invalid cart edit." });
+      if (edit.unit === "kg" && edit.qty > 2) return void res.status(422).json({ error: "Household limit is 2 kg per item." });
+      changed.add(edit.index);
+      lines[edit.index] = { ...lines[edit.index]!, qty: edit.qty, unit: edit.unit, interpretation: undefined };
+    }
+    const household = store.household(entry.householdId)!;
+    const next = priceCart(lines.filter(l => l.qty > 0), household);
+    if (next.held.length || !next.lines.length) {
+      return void res.status(422).json({ error: next.held[0]?.reason ?? "Choose a household quantity and keep at least one item." });
+    }
+    next.held = current.held ?? [];
+    card.cart = next;
+    card.needsApproval = next.total > household.approvalLimit;
+    store.saveAction(entry);
+    res.json({ cart: card });
+  });
+
   app.post("/actions/:id/approve", async (req, res) => {
     const entry = store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
@@ -197,7 +227,15 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         scheduledFor = new Date(at).toISOString(); // UTC, so dueOrders can compare strings
       }
     }
-    if (!entry.done && card.type === "cart") {
+    if (card.type === "cart" || card.type === "order") {
+      const cart = reviewOf(card.type === "cart" ? card.cart : card.order.cart);
+      if (!entry.done && !matchesHouseholdBill(cart)) return void res.status(409).json({ error: "Review the current quantities and prices." });
+      if ((req.body?.reviewId !== undefined || (card.type === "order" && cart.reviewId && !entry.done))
+          && cart.reviewId !== req.body?.reviewId) {
+        return void res.status(409).json({ error: "Cart changed. Review the current bill before confirming." });
+      }
+    }
+    if (!entry.done && card.type === "cart" && want === undefined) {
       const household = store.household(entry.householdId)!;
       household.history.push({
         at: new Date().toISOString().slice(0, 10),
@@ -236,39 +274,68 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       entry.done = true;
       store.saveAction(entry);
       if (option === "order") return void res.json({ status: "answered" });
-      const { cart } = card.plan.cook; // already priced by planMeals; same approval rule as call carts
+      const saved = reviewOf(card.plan.cook.cart);
+      const cart = saved.reviewId ? saved : priceCart(requestsFromCart(saved), household);
       const fresh: ActionCard = { id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit };
       store.addAction({ card: fresh, householdId: household.id, done: false });
+      for (const issue of cart.held ?? []) {
+        const question = quantityQuestion(issue, household);
+        store.addAction({ ...question, cartId: fresh.id, householdId: household.id, done: false });
+      }
       return void res.json({ status: "answered", cart: fresh });
     }
     if (card.type !== "question" || !choices) return void res.status(400).json({ error: "only questions can be answered" });
     if (entry.done) return void res.status(409).json({ error: "already answered" });
-    const option: unknown = req.body?.option;
+    let option: unknown = req.body?.option;
+    if (Buffer.isBuffer(req.body)) {
+      if (!req.body.length) return void res.status(400).json({ error: "empty audio body" });
+      const lang = store.household(entry.householdId)!.cook.lang;
+      const transcript = await withAudio(req, path => stt.transcribe(path, { lang, keywords: card.options }));
+      const current = store.action(card.id);
+      if (!current || current.done || JSON.stringify(current.card) !== JSON.stringify(card)) {
+        return void res.status(409).json({ error: "This question has changed." });
+      }
+      option = spokenOption(card, choices, transcript.text);
+      if (!option) return void res.status(422).json({ error: "Please tap one of the choices." });
+    }
     if (typeof option !== "string" || !card.options.includes(option)) {
       return void res.status(400).json({ error: `option must be one of ${JSON.stringify(card.options)}` });
     }
     const line = choices[card.options.indexOf(option)];
+    const { callId, householdId } = entry;
+    const related = entry.cartId ? store.action(entry.cartId) : callId && store.call(callId)?.entries.find(e => e.card.type === "cart" && !e.done);
+    const cartEntry = related && !related.done ? related : undefined;
+    const previous = cartEntry?.card.type === "cart" ? reviewOf(cartEntry.card.cart) : undefined;
+    const held = (previous?.held ?? []).filter(h => h.index !== entry.heldIndex);
     if (!line) {
+      if (previous && cartEntry && held.length !== previous.held?.length) {
+        previous.held = held;
+        previous.reviewId = randomUUID();
+        store.saveAction(cartEntry);
+      }
       entry.done = true;
       store.saveAction(entry);
       return void res.json({ status: "answered" });
     }
-
-    const { callId, householdId } = entry;
-    const cartEntry = store.call(callId!)!.entries.find((e) => e.card.type === "cart");
-    if (cartEntry?.done) return void res.status(409).json({ error: "cart already approved" });
-    const lines = [...(cartEntry?.lines ?? []), line];
-    const fresh = await cartCard(lines, store.household(householdId)!);
-    // the cart may have been approved during the await; saving our stale copy would undo that
-    if (cartEntry && store.action(cartEntry.card.id)!.done) return void res.status(409).json({ error: "cart already approved" });
+    const lines = [...(previous ? requestsFromCart(previous) : []), { ...line, confidence: 1 }];
+    const household = store.household(householdId)!;
+    const next = groceryPlan({ groceries: lines, notes: [] }, household);
+    if (next.questions.length) {
+      const followUp = next.questions[0]!;
+      entry.card = { ...followUp.card, id: card.id };
+      entry.choices = followUp.choices;
+      store.saveAction(entry);
+      return void res.status(422).json({ error: followUp.card.text, question: entry.card });
+    }
+    next.cart.held = held;
+    const fresh: ActionCard = { id: cartEntry?.card.id ?? randomUUID(), type: "cart", cart: next.cart, needsApproval: next.cart.total > household.approvalLimit };
     entry.done = true;
     store.saveAction(entry);
     if (cartEntry) {
-      Object.assign(cartEntry.card, { cart: fresh.cart, needsApproval: fresh.needsApproval });
-      cartEntry.lines = lines;
+      cartEntry.card = fresh;
       store.saveAction(cartEntry);
     } else {
-      store.addAction({ card: fresh, callId, householdId, done: false, lines }, { first: true });
+      store.addAction({ card: fresh, callId, householdId, done: false }, { first: true });
     }
     res.json({ status: "answered", cart: cartEntry?.card ?? fresh });
   });
