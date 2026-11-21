@@ -1,6 +1,6 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
-import { randomInt, randomUUID } from "node:crypto";
+import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,10 +278,11 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
     const id = randomUUID();
     const household: Household = { id, ...parsed, pantry: {}, platform: "mock", history: [] };
+    const ownerToken = randomBytes(32).toString("base64url");
     let cookCode: string;
     do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
-    while (!store.addHousehold(household, cookCode));
-    res.status(201).json({ id, cookCode });
+    while (!store.addHousehold(household, cookCode, ownerToken));
+    res.set("cache-control", "no-store").status(201).json({ id, cookCode, ownerToken, instamartAvailable: false });
   });
 
   app.post("/join", (req, res) => {
