@@ -278,3 +278,66 @@ test("processCall: vague 'thoda sa palak' with qty 0 becomes a one-bunch questio
   assert.match(question.text, /1 bunch Palak/);
   assert.doesNotMatch(question.text, /\b0 /);
 });
+
+test("processCall: Sarvam's 30 s limit falls back to the other STT and records the provider used", async () => {
+  const tooLong = new Error(
+    'sarvam stt 400: {"error":{"message":"Audio duration exceeds the maximum limit of 30 seconds. Please use the batch API for longer audio files.","code":"invalid_request_error"}}',
+  );
+  const sarvam: Stt = { transcribe: async () => { throw tooLong; } };
+  const heard: string[][] = [];
+  const openai: Stt = {
+    async transcribe(_audioPath, opts) {
+      heard.push(opts.keywords);
+      return { text: "do kilo pyaaz", lang: "hi", provider: "openai" };
+    },
+  };
+  const { llm } = fakeLlm({
+    groceries: [{ raw: "do kilo pyaaz", requested: true, itemWord: "pyaaz", qtyPhrase: "do kilo", item: "onion", qty: 2, unit: "kg", brand: null, confidence: 1 }],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "long.webm", householdId: "h1" }, h, { stt: sarvam, fallbackStt: openai, llm });
+
+  assert.equal(res.transcript.provider, "openai");
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit]), [["onion", 2, "kg"]]);
+  assert.ok(heard[0]!.includes("aashirvaad")); // fallback is biased with the same household keywords
+  // any other STT failure still surfaces
+  const broken: Stt = { transcribe: async () => { throw new Error("sarvam stt 401: bad key"); } };
+  await assert.rejects(processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt: broken, fallbackStt: openai, llm }), /401/);
+});
+
+test("processCall: harness keeps a spoken brand the LLM dropped or misspelled (हैंको / hanko → henko)", async () => {
+  const { stt } = fakeStt("मेरी आइटम सूची में 0.25 किलो हैंको डिटर्जेंट बार जोड़ें। aur ek hanko bar", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "0.25 किलो हैंको डिटर्जेंट बार", requested: true, itemWord: "हैंको डिटर्जेंट बार", qtyPhrase: "0.25 किलो", item: "detergent-powder", qty: 0.25, unit: "kg", brand: null, confidence: 0.9 },
+      { raw: "ek hanko bar", requested: true, itemWord: "detergent bar", qtyPhrase: "ek", item: "detergent-powder", qty: 1, unit: "piece", brand: "hanko", confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["detergent-powder", "henko"], ["detergent-powder", "henko"]]);
+});
+
+test("processCall: an unknown product whose name contains a catalog word is not forced onto it (chizzpa chips ≠ cheese)", async () => {
+  const { stt } = fakeStt("मैं पाँच कार्टन चीज़ जपा पोटैटो क्रिप्स चिप्स ... जोड़ना चाहता हूँ", "hi");
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "पाँच कार्टन चीज़ जपा पोटैटो क्रिप्स चिप्स", requested: true, itemWord: "चीज़ जपा पोटैटो क्रिप्स चिप्स", qtyPhrase: "पाँच कार्टन", item: null, qty: 5, unit: "packet", brand: "chizzpa", confidence: 0.8 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries, []);
+  // live (eval hi-08eeb3eb) the model split off "चीज़" as its own cheese line; the schema must say not to
+  const item = JSON.stringify(calls[0]!.schema);
+  assert.match(item, /contains a catalog word/);
+  assert.match(item, /never split one product/);
+});

@@ -5,6 +5,7 @@ import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
+import { openaiStt } from "./adapters/openai-stt.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -41,7 +42,7 @@ export const EXTRACTION_SCHEMA = {
           },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
-          item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the item is not in the catalog" },
+          item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the product is not in the catalog. A product whose name merely contains a catalog word is not that item: 'cheez-pa potato chips', 'kaju katli', 'chocolate ice cream' → null; never split one product name into several lines" },
           qty: { type: "number" },
           unit: { type: "string", enum: UNITS },
           brand: { ...nullable("string"), description: "lowercase kebab-case brand id, e.g. 'aashirvaad', 'india-gate'" },
@@ -90,9 +91,9 @@ export function sttKeywords(h: Household): string[] {
 // ponytail: closed list, grow it from eval misses; a brand not listed passes through as the LLM's slug.
 const BRANDS: Record<string, string> = {
   aashirvaad: "aashirvaad", amul: "amul", britannia: "britannia", fortune: "fortune", "india gate": "india-gate",
-  surf: "surf-excel", tata: "tata", vim: "vim",
+  surf: "surf-excel", tata: "tata", vim: "vim", henko: "henko", hanko: "henko",
   आशीर्वाद: "aashirvaad", अमूल: "amul", ब्रिटानिया: "britannia", फॉर्च्यून: "fortune", "इंडिया गेट": "india-gate",
-  सर्फ: "surf-excel", टाटा: "tata", विम: "vim",
+  सर्फ: "surf-excel", टाटा: "tata", विम: "vim", हेंको: "henko", हैंको: "henko",
 };
 
 function spokenBrand(text: string): string | undefined {
@@ -162,11 +163,18 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
   return extraction;
 }
 
-export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options: PipelineOptions = {}): Promise<CallResult> {
+// Sarvam's sync API rejects audio over 30 s ("use the batch API"); cook notes can run longer.
+const TOO_LONG = /maximum limit of 30 seconds|batch API/i;
+
+/** fallbackStt: used only when `stt` hits Sarvam's length limit; defaults to OpenAI. */
+export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<CallResult> {
   const t0 = performance.now();
   const opts: { lang?: Lang; keywords: string[] } = { keywords: options.harness === false ? [] : sttKeywords(household) };
   if (input.lang) opts.lang = input.lang;
-  const transcript: Transcript = await ports.stt.transcribe(input.audioPath, opts);
+  const transcript: Transcript = await ports.stt.transcribe(input.audioPath, opts).catch((e: unknown) => {
+    if (!(e instanceof Error && TOO_LONG.test(e.message))) throw e;
+    return (ports.fallbackStt ?? openaiStt()).transcribe(input.audioPath, opts);
+  });
   const t1 = performance.now();
   const extraction = await processTranscript(transcript.text, transcript.lang, household, ports, options);
   const t2 = performance.now();
