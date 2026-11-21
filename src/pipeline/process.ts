@@ -5,9 +5,10 @@ import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveItem } from "./indic-stub.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
-interface LlmLine extends Omit<GroceryLine, "brand"> {
+interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
   itemWord: string;
   qtyPhrase: string;
+  item: string | null; // null = not in our catalog
   brand: string | null;
 }
 interface LlmExtraction {
@@ -33,7 +34,7 @@ export const EXTRACTION_SCHEMA = {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
-          item: { type: "string", enum: ITEMS },
+          item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the item is not in the catalog" },
           qty: { type: "number" },
           unit: { type: "string", enum: UNITS },
           brand: { ...nullable("string"), description: "lowercase kebab-case brand id, e.g. 'aashirvaad', 'india-gate'" },
@@ -72,17 +73,19 @@ export function sttKeywords(h: Household): string[] {
   return [...new Set([...Object.values(h.brands), ...items].map((w) => w.replaceAll("-", " ")))];
 }
 
-function toLine(l: LlmLine): GroceryLine {
+function toLine(l: LlmLine): GroceryLine[] {
+  const item = resolveItem(l.itemWord) ?? l.item;
+  if (!item || !(ITEMS as string[]).includes(item)) return [];
   const q = normalizeQuantity(l.qtyPhrase);
   const line: GroceryLine = {
     raw: l.raw,
-    item: resolveItem(l.itemWord) ?? l.item,
+    item,
     qty: q?.qty ?? l.qty,
     unit: q?.unit ?? l.unit,
     confidence: l.confidence,
   };
   if (l.brand) line.brand = l.brand;
-  return line;
+  return [line];
 }
 
 export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }): Promise<Extraction> {
@@ -93,7 +96,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     schemaName: "extraction",
   });
   const extraction: Extraction = {
-    groceries: out.groceries.map(toLine).filter((l) => (ITEMS as string[]).includes(l.item)),
+    groceries: out.groceries.flatMap(toLine),
     notes: out.notes,
   };
   if (out.advance) {

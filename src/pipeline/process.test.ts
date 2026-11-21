@@ -56,3 +56,20 @@ test("processCall: cook note → gold extraction, household context to both port
   for (const k of ["sttMs", "extractMs", "planMs", "totalMs"] as const) assert.ok(t[k] >= 0, k);
   assert.ok(t.totalMs >= t.sttMs + t.extractMs);
 });
+
+test("processCall: out-of-catalog item (pizza base) is dropped, not forced onto an id", async () => {
+  const { stt } = fakeStt("मैं एक पैकेट इंग्लिश ओवन बेस पिज़्ज़ा ख़रीदना चाहता हूँ", "hi");
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "एक पैकेट इंग्लिश ओवन बेस पिज़्ज़ा", itemWord: "पिज़्ज़ा बेस", qtyPhrase: "एक पैकेट", item: null, qty: 1, unit: "packet", brand: "english-oven", confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction, { groceries: [], notes: [] });
+  // the schema must let the model say "not in catalog"
+  assert.match(JSON.stringify(calls[0]!.schema), /"enum":\[[^\]]*null/);
+});
