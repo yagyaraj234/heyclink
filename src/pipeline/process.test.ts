@@ -362,3 +362,19 @@ test("processCall: harness resolves brands through the indic brand table (बी
     ["ragi-flour", 1, "packet", "slurrp-farm"],
   ]);
 });
+
+test("processCall: a brand in the spoken words beats the LLM's own spelling of it (हैंको over 'hanco')", async () => {
+  const { stt } = fakeStt("मेरी आइटम सूची में 0.25 किलो हैंको डिटर्जेंट बार जोड़ें।", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      // live reply, eval clip hi-c5ad6286
+      { raw: "0.25 किलो हैंको डिटर्जेंट बार", requested: true, itemWord: "हैंको डिटर्जेंट बार", qtyPhrase: "0.25 किलो", item: "detergent-powder", qty: 0.25, unit: "kg", brand: "hanco", confidence: 0.52 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["detergent-powder", "henko"]]);
+});
