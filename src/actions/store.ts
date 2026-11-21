@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { openAlerts } from "./alerts.ts";
 import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
 import type { ActionCard, CallResult, GroceryLine, Household } from "../contracts.ts";
@@ -11,6 +12,7 @@ export const DEMO_CODE = "TADKA2";
 // choices = per question option, the line it adds to the cart (null = adds nothing). at = when addAction stored it.
 // placing = an order checkout is in flight (see placeOrder).
 export type Entry = {
+  tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string };
   card: ActionCard; householdId: string; callId?: string; done: boolean; lines?: GroceryLine[]; choices?: (GroceryLine | null)[]; placing?: boolean; at?: string;
 };
 /** call.actions is rebuilt from the action rows, so a card edited through its Entry shows up in the call. */
@@ -24,6 +26,11 @@ export function openStore(path = ":memory:") {
     CREATE TABLE IF NOT EXISTS owner_keys (household TEXT PRIMARY KEY, hash TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, household TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, household TEXT NOT NULL, call TEXT, pos INTEGER NOT NULL, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS usage_samples (
+      household TEXT NOT NULL, receipt TEXT NOT NULL, item TEXT NOT NULL,
+      qty REAL NOT NULL, unit TEXT NOT NULL, days REAL NOT NULL, PRIMARY KEY(receipt,item)
+    );
+    CREATE INDEX IF NOT EXISTS samples_by_household ON usage_samples(household,item);
     CREATE INDEX IF NOT EXISTS calls_household ON calls(household);
     CREATE INDEX IF NOT EXISTS actions_call ON actions(call, pos);
   `);
@@ -40,7 +47,9 @@ export function openStore(path = ":memory:") {
     return { call: { ...call, actions: entries.map((e) => e.card) }, at: row.at, entries };
   };
 
+  const alerts = openAlerts(db);
   const store = {
+    alerts,
     household: (id: string) => one<Household>("SELECT data FROM households WHERE id = ?", id),
     householdByCode: (code: string) => one<Household>("SELECT data FROM households WHERE code = ?", code),
     /** false when the code is already taken; the caller picks another. */
@@ -56,6 +65,9 @@ export function openStore(path = ":memory:") {
         throw error;
       }
     },
+    hasOwnerKey(id: string) {
+      return !!db.prepare("SELECT 1 FROM owner_keys WHERE household=?").get(id);
+    },
     isOwner(id: string, authorization: string | undefined): boolean {
       const token = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization ?? "")?.[1];
       return !!token && !!db.prepare("SELECT 1 FROM owner_keys WHERE household = ? AND hash = ?")
@@ -64,8 +76,30 @@ export function openStore(path = ":memory:") {
     saveHousehold: (h: Household) => void db.prepare("UPDATE households SET data = ? WHERE id = ?").run(JSON.stringify(h), h.id),
 
     /** Stores the call; its cards are stored separately with addAction. */
-    addCall: (call: CallResult, householdId: string, at: string) =>
-      void db.prepare("INSERT INTO calls VALUES (?, ?, ?, ?)").run(call.callId, householdId, at, JSON.stringify({ ...call, actions: [] })),
+    addCall(call: CallResult, householdId: string, at: string) {
+      const extraction = call.extraction as typeof call.extraction & {stockouts?: string[]};
+      for (const item of extraction.stockouts ?? []) {
+        const receipt = db.prepare(`SELECT id,data FROM actions WHERE household=? AND data->>'$.tracking.state'='delivered'
+          AND data->>'$.tracking.deliveredAt'<=? AND EXISTS (
+            SELECT 1 FROM json_each(data,'$.card.cart.lines') WHERE value->>'$.item'=?)
+          ORDER BY data->>'$.tracking.deliveredAt' DESC LIMIT 1`).get(householdId, at, item) as {id:string;data:string}|undefined;
+        if (!receipt) continue;
+        const entry: Entry = JSON.parse(receipt.data);
+        if (entry.card.type !== "cart") continue;
+        const bought = entry.card.cart.lines.filter(l => l.item === item);
+        const first = bought[0]!;
+        if (bought.some(line => line.unit !== first.unit)) continue;
+        const qty = bought.reduce((sum,line) => sum + line.qty,0);
+        const days = (Date.parse(at) - Date.parse(entry.tracking!.deliveredAt!)) / 86_400_000;
+        db.prepare("INSERT OR IGNORE INTO usage_samples VALUES (?,?,?,?,?,?)").run(householdId,receipt.id,item,qty,first.unit,days);
+      }
+      const items = [...new Set(extraction.groceries.map(l => l.item))];
+      const usage = items.flatMap(item => db.prepare(`SELECT item,qty,unit,ROUND(AVG(days),1) AS days,COUNT(*) AS samples
+        FROM usage_samples WHERE household=? AND item=? GROUP BY qty,unit ORDER BY MAX(rowid) DESC LIMIT 1`).all(householdId,item));
+      db.prepare("INSERT INTO calls VALUES (?, ?, ?, ?)").run(call.callId, householdId, at, JSON.stringify({
+        ...call, ...(usage.length && {usage}), actions: [],
+      }));
+    },
     call(id: string): StoredCall | undefined {
       const row = db.prepare("SELECT data, at FROM calls WHERE id = ?").get(id) as CallRow | undefined;
       return row && toStored(row);
@@ -78,8 +112,17 @@ export function openStore(path = ":memory:") {
     /** Appends the card to its call's actions, or puts it first. */
     addAction(e: Entry, { first = false } = {}) {
       const pos = first ? "COALESCE(MIN(pos), 0) - 1" : "COALESCE(MAX(pos), 0) + 1";
+      if (e.card.type === "cart" && e.callId && e.card.cart.lines.length && alerts.hasDevice(e.householdId)) {
+        const call = one<CallResult & { extraction: { neededBy?: string } }>("SELECT data FROM calls WHERE id=?",e.callId);
+        const reminder = Date.parse(call?.extraction.neededBy ?? "") - 30 * 60_000;
+        if (reminder > Date.now()) {
+          e.tracking = {...e.tracking, remindAt: new Date(reminder).toISOString()};
+          alerts.queue(e.householdId, e.card.id, "reminder", reminder);
+        }
+      }
       db.prepare(`INSERT INTO actions SELECT ?, ?, ?, ${pos}, ? FROM actions WHERE call IS ?`)
         .run(e.card.id, e.householdId, e.callId ?? null, JSON.stringify({ ...e, at: new Date().toISOString() }), e.callId ?? null);
+      if (e.card.type === "cart" && e.card.cart.lines.length) alerts.queue(e.householdId, e.card.id, "ready", Date.now());
     },
     /** Confirmed (approved) scheduled orders due by `now` (ISO, UTC) and not already being placed. */
     dueOrders: (now: string) =>
@@ -93,6 +136,7 @@ export function openStore(path = ":memory:") {
 
     /** Drops the fixture household's calls and actions and restores its fixture data. */
     resetDemo() {
+      db.prepare("DELETE FROM usage_samples WHERE household = ?").run(householdJson.id);
       db.prepare("DELETE FROM calls WHERE household = ?").run(householdJson.id);
       db.prepare("DELETE FROM actions WHERE household = ?").run(householdJson.id);
       store.saveHousehold(householdJson as Household);

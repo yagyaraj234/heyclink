@@ -491,11 +491,12 @@ test("a restart on the same database keeps households, join codes, calls and app
   const boot = () => serve(fakeStt(), { store: openStore(join(dir, "vfi.db")) });
 
   const before = await boot();
-  const { id, cookCode } = (await (await before.post("/households", signup)).json()) as { id: string; cookCode: string };
+  const { id, cookCode, ownerToken } = (await (await before.post("/households", signup)).json()) as { id: string; cookCode: string; ownerToken: string };
   const first = (await (await before.post("/calls", { transcript: "pehli", householdId: id })).json()) as CallResult;
   const second = (await (await before.post("/calls", { transcript: "doosri", householdId: id })).json()) as CallResult;
   const [cart, advance] = first.actions;
-  await before.post(`/actions/${cart!.id}/approve`);
+  const auth = { method: "POST", headers: { authorization: "Bearer " + ownerToken } };
+  await fetch(before.base + `/actions/${cart!.id}/approve`, auth);
   await before.close();
 
   const after = await boot();
@@ -510,7 +511,7 @@ test("a restart on the same database keeps households, join codes, calls and app
   assert.deepEqual(list.map((c) => c.transcript.text), ["doosri", "pehli"]);
   assert.deepEqual(list[1]!.status, { [cart!.id]: "approved", [advance!.id]: "pending" });
   assert.deepEqual(list[0]!.actions, second.actions);
-  assert.deepEqual(await (await after.post(`/actions/${advance!.id}/approve`)).json(), {
+  assert.deepEqual(await (await fetch(after.base + `/actions/${advance!.id}/approve`, auth)).json(), {
     status: "approved",
     upiUrl: "upi://pay?pa=sunita@okicici&pn=Sunita&am=500&cu=INR&tn=Advance",
   });
@@ -643,4 +644,97 @@ test("household signup gives only the owner a private connection credential", as
   const cook = await (await post("/join", { code: owner.cookCode })).json();
   const publicHouse = await (await fetch(base + "/households/" + owner.id)).json();
   assert.ok(!("ownerToken" in cook) && !("ownerToken" in publicHouse));
+});
+
+test('owner receives a cart-ready push for a cook call without leaking the device token', async (t) => {
+  const store = openStore();
+  const {post, base, close} = await serve(fakeStt(), {store});
+  t.after(close);
+  const owner = await (await post('/households', signup)).json();
+  const path = '/households/' + owner.id + '/alerts';
+  const token = 'ExponentPushToken[test-device-123]';
+  assert.equal((await post(path, {token})).status, 403);
+  const register = await fetch(base + path, {method: 'POST', headers: {'content-type':'application/json', authorization:'Bearer ' + owner.ownerToken}, body: JSON.stringify({token})});
+  assert.equal(register.status, 204);
+  const call = await (await post('/calls', {householdId: owner.id, transcript: case01.transcript})).json();
+  const {runDue} = await import('./actions/orders.ts');
+  const {mockSwiggy} = await import('./actions/swiggy.ts');
+  const pushes: unknown[] = [];
+  const push = async (device: string, cart: string, kind: string) => {pushes.push([device, cart, kind]);};
+  await runDue(new Date(), store, mockSwiggy, push);
+  await runDue(new Date(), store, mockSwiggy, push);
+  assert.deepEqual(pushes, [[token, call.actions[0].id, 'ready']]);
+  assert.ok(!(await (await fetch(base + '/households/' + owner.id)).text()).includes(token));
+});
+
+test('a single requested reminder stops after owner marks the purchase; delivery remains visible to the cook', async (t) => {
+  const store = openStore();
+  const {post, base, close} = await serve(fakeStt(), {store});
+  t.after(close);
+  const owner = await (await post('/households', signup)).json();
+  const send = (path: string, body: object) => fetch(base + path, {method:'POST',headers:{'content-type':'application/json',authorization:'Bearer ' + owner.ownerToken},body:JSON.stringify(body)});
+  await send('/households/' + owner.id + '/alerts', {token:'ExpoPushToken[phone]'});
+  const call = await (await post('/calls', {householdId: owner.id, transcript:case01.transcript})).json();
+  const cartId = call.actions[0].id;
+  const path = '/actions/' + cartId + '/tracking';
+  const tomorrow = new Date(Date.now() + 86400_000);
+  assert.equal((await send(path, {remindAt:tomorrow.toISOString()})).status, 200);
+  assert.equal((await post(path, {state:'ordered'})).status, 403);
+  assert.equal((await send(path, {state:'delivered'})).status, 409);
+  assert.equal((await send(path, {state:'ordered'})).status, 200);
+  assert.equal((await send(path, {state:'ordered'})).status, 200);
+  assert.equal((await send(path, {state:'delivered'})).status, 200);
+  const {runDue} = await import('./actions/orders.ts');
+  const {mockSwiggy} = await import('./actions/swiggy.ts');
+  const pushes: string[] = [];
+  await runDue(tomorrow, store, mockSwiggy, async (_,__,kind) => { pushes.push(kind); });
+  assert.deepEqual(pushes, []);
+  const detail = await (await fetch(base + '/calls/' + call.callId)).json();
+  assert.equal(detail.tracking[cartId].state,'delivered');
+  const household = await (await fetch(base + '/households/' + owner.id)).json();
+  assert.equal(household.history.length,1);
+});
+
+test('the next cook request shows how long the previous delivered quantity lasted', async (t) => {
+  const store = openStore();
+  const llm = llmReplying({notes:[], groceries:[{item:"onion",raw:"pyaaz",unit:"kg",qty:1,confidence:1}]});
+  const {post, close} = await serve(fakeStt(), {store,llm});
+  t.after(close);
+  const delivered = {id:'onion-delivery', type:'cart', needsApproval:false, cart:{platform:'mock',total:44,lines:[
+    {item:'onion',qty:1,unit:'kg',price:44,searchUrl:''}
+  ]}} satisfies ActionCard;
+  store.addAction({householdId:'h1', done:true, card:delivered,
+    tracking:{state:'delivered',deliveredAt:'2026-01-01T10:00:00.000Z'}});
+  const extraction = {groceries:[],notes:[],stockouts:['onion']};
+  const empty: CallResult = {callId:'recorded-note',transcript:{text:'pyaaz khatam',lang:'hi',provider:'fake'},actions:[],
+    timings:{totalMs:0,sttMs:0,extractMs:0,planMs:0},extraction};
+  store.addCall(empty,'h1','2026-01-06T10:00:00.000Z');
+  store.addCall({...empty,callId:'repeated-note'},'h1','2026-01-07T10:00:00.000Z');
+  const call = await (await post('/calls',{householdId:'h1',transcript:case01.transcript})).json();
+  assert.deepEqual(call.usage, [{item:'onion',qty:1,unit:'kg',days:5,samples:1}]);
+});
+
+test('manual purchase requires the owner to confirm the same cart revision they reviewed', async (t) => {
+  const store = openStore();
+  const {post, base, close} = await serve(fakeStt(), {store});
+  t.after(close);
+  const owner = await (await post('/households', signup)).json();
+  const cart = {platform:'mock',total:22,lines:[{item:'onion',qty:500,unit:'g',price:22,searchUrl:''}],reviewId:'v2'} as const;
+  store.addAction({householdId:owner.id,done:false,card:{type:'cart',id:'updated',needsApproval:true,cart:{...cart,lines:[...cart.lines]}}});
+  const purchase = (reviewId: string) => fetch(base+'/actions/updated/tracking', {method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+owner.ownerToken},body:JSON.stringify({state:'ordered',reviewId})});
+  assert.equal((await purchase('v1')).status,409);
+  assert.equal((await purchase('v2')).status,200);
+});
+
+test('only the household owner can approve purchases after signup', async (t) => {
+  const {post, base, close} = await serve();
+  t.after(close);
+  const owner = await (await post('/households', signup)).json();
+  const other = await (await post('/households', signup)).json();
+  const call = await (await post('/calls', {householdId:owner.id,transcript:case01.transcript})).json();
+  const path = '/actions/' + call.actions[0].id + '/approve';
+  assert.equal((await post(path)).status,403);
+  const approve = (token: string) => fetch(base + path, {method:'POST',headers:{authorization:'Bearer '+token}});
+  assert.equal((await approve(other.ownerToken)).status,403);
+  assert.equal((await approve(owner.ownerToken)).status,200);
 });
