@@ -533,6 +533,21 @@ const mealLlm: Llm = {
   }) as T,
 };
 
+test("two server instances answering at once count each meal-plan answer once and lose none", async (t) => {
+  const store = await openStore();
+  const a = await serve(fakeStt(), { llm: mealLlm, store });
+  const b = await serve(fakeStt(), { llm: mealLlm, store: await openStore({ schema: store.schema }) });
+  t.after(a.close);
+  t.after(b.close);
+  const ids = await Promise.all(Array.from({ length: 8 }, async () =>
+    ((await (await a.post("/households/h1/meal-plan", { date: "2026-11-22" })).json()) as ActionCard).id));
+  const statuses = await Promise.all(ids.flatMap((id) => [a, b].map(async (s) => (await s.post(`/actions/${id}/answer`, { option: "order" })).status)));
+  assert.equal(statuses.filter((s) => s === 200).length, 8);
+  assert.equal(statuses.filter((s) => s === 409).length, 8);
+  const h = (await (await fetch(`${b.base}/households/h1`)).json()) as Household;
+  assert.deepEqual(h.habits, { sun: { cook: 0, order: 8 } });
+});
+
 test("POST /households/:id/meal-plan returns a meal-plan card; answering it counts the habit and 'cook' returns a cart", async (t) => {
   const { base, post, close } = await serve(fakeStt(), { llm: mealLlm });
   t.after(close);
