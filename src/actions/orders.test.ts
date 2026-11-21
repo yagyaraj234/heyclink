@@ -74,10 +74,23 @@ test("runDue runs that overlap still check out once", async () => {
   assert.deepEqual([a.length, b.length], [1, 0]);
 });
 
-test("after restart, interrupted checkouts fail and confirmed orders without a claim still run", async () => {
+test("another instance's runDue leaves a checkout in flight alone and fails one abandoned for 10 minutes", async () => {
+  const a = await openStore();
+  const b = await openStore({ schema: a.schema });
+  await addOrder(a, "inflight", "2026-11-22T03:00:00.000Z");
+  assert.equal(await a.claimOrder("inflight", NOW.toISOString()), true);
+  const { swiggy, carts } = fakeSwiggy();
+  assert.deepEqual(await runDue(new Date(NOW.getTime() + 9 * 60_000), b, swiggy), []);
+  assert.equal((await orderOf(b, "inflight")).status, "scheduled");
+  assert.deepEqual(await runDue(new Date(NOW.getTime() + 11 * 60_000), b, swiggy), []);
+  assert.equal((await orderOf(b, "inflight")).status, "failed");
+  assert.equal(carts.length, 0);
+});
+
+test("after a crash, interrupted checkouts fail and confirmed orders without a claim still run", async () => {
   const before = await openStore();
   await addOrder(before, "interrupted", "2026-11-22T03:00:00.000Z");
-  assert.equal(await before.claimOrder("interrupted"), true);
+  assert.equal(await before.claimOrder("interrupted", "2026-11-22T03:00:00.000Z"), true);
   await before.addAction({
     householdId: "h1",
     done: true,
@@ -85,7 +98,7 @@ test("after restart, interrupted checkouts fail and confirmed orders without a c
   });
   await addOrder(before, "unconfirmed", "2026-11-22T03:00:00.000Z", false);
 
-  const after = await openStore({ schema: before.schema, recoverInterruptedOrders: true });
+  const after = await openStore({ schema: before.schema });
   const { swiggy, carts } = fakeSwiggy();
   const placed = await runDue(NOW, after, swiggy);
   assert.equal((await orderOf(after, "interrupted")).status, "failed");

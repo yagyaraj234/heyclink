@@ -22,7 +22,7 @@ const llmModel = process.env.OPENAI_LLM_MODEL || "gpt-6-luna"; // passed explici
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("Set DATABASE_URL to a Postgres connection string (Neon: the pooled one)");
 // Only the server runs checkout against this database.
-const store = await openStore({ url, recoverInterruptedOrders: true });
+const store = await openStore({ url });
 const swiggy = mockSwiggy; // ponytail: mock orders until the Instamart spike is go
 setInterval(() => void runDue(new Date(), store, swiggy, expoPush).catch(console.error), 60_000);
 

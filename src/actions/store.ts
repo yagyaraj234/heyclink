@@ -28,9 +28,9 @@ export interface GroceryReceipt {
 export const cartRevision = (cart: Cart) => createHash("sha256").update(JSON.stringify(cart)).digest("hex");
 // done = approved (cart/advance) or answered (question). cartId links ingredient questions to a standalone meal cart.
 // choices = per question option, the line it adds to the cart (null = adds nothing). at = when addAction stored it.
-// placing = an order checkout is in flight (see placeOrder).
+// placing = when an order checkout started (see placeOrder); a stale one is abandoned.
 export type Entry = {
-  card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: boolean; at?: string;
+  card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: string; at?: string;
   refreshedBill?: boolean;
   tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string; receipt?: GroceryReceipt };
 };
@@ -77,7 +77,7 @@ const SCHEMA = `
  * `url` set: that database's default schema (production, DATABASE_URL).
  * `url` unset: a fresh schema on TEST_DATABASE_URL, or `schema` to reopen one (tests).
  */
-export async function openStore({ url, schema, recoverInterruptedOrders = false }: { url?: string; schema?: string; recoverInterruptedOrders?: boolean } = {}) {
+export async function openStore({ url, schema }: { url?: string; schema?: string } = {}) {
   if (!url) {
     url = process.env.TEST_DATABASE_URL;
     if (!url) throw new Error("Set TEST_DATABASE_URL to a Postgres you can create schemas in (see README)");
@@ -254,7 +254,7 @@ export async function openStore({ url, schema, recoverInterruptedOrders = false 
     dueOrders: (now: string) =>
       many<Entry>(`SELECT data FROM actions WHERE data::jsonb #>> '{card,type}' = 'order'
         AND data::jsonb #>> '{card,order,status}' = 'scheduled' AND (data::jsonb ->> 'done')::boolean
-        AND NOT COALESCE((data::jsonb ->> 'placing')::boolean, false)
+        AND data::jsonb ->> 'placing' IS NULL
         AND (data::jsonb #>> '{card,order,scheduledFor}' IS NULL OR (data::jsonb #>> '{card,order,scheduledFor}') COLLATE "C" <= $1)`, now),
     /** Cards with no call (meal plans, the carts they make), newest first. */
     looseActions: (householdId: string) =>
@@ -274,10 +274,10 @@ export async function openStore({ url, schema, recoverInterruptedOrders = false 
       return entry;
     }),
     /** true for the one caller that gets to place this order. */
-    claimOrder: (id: string) => tx(async () => {
+    claimOrder: (id: string, at: string) => tx(async () => {
       const entry = await store.lockedAction(id);
       if (!entry?.done || entry.card.type !== "order" || entry.card.order.status !== "scheduled" || entry.placing) return false;
-      entry.placing = true;
+      entry.placing = at;
       await store.saveAction(entry);
       return true;
     }),
@@ -318,6 +318,20 @@ export async function openStore({ url, schema, recoverInterruptedOrders = false 
       });
     },
 
+    /** Fails orders whose checkout started before `before` and never finished: the instance running it died,
+     * and the attempt may have reached the provider, so it is never retried.
+     * ponytail: a checkout that outlives the cutoff and then succeeds stays "failed"; the Swiggy client times out after 15 s. */
+    failAbandonedCheckouts: (before: string) => tx(async () => {
+      // Edited in JS, not jsonb_set, so the stored JSON keeps its key order (cart revisions hash it).
+      for (const e of await many<Entry>(`SELECT data FROM actions WHERE data::jsonb #>> '{card,type}' = 'order'
+          AND data::jsonb #>> '{card,order,status}' = 'scheduled' AND (data::jsonb ->> 'placing') COLLATE "C" < $1 FOR UPDATE`, before)) {
+        if (e.card.type !== "order") continue;
+        e.card.order.status = "failed";
+        delete e.placing;
+        await store.saveAction(e);
+      }
+    }),
+
     /** Drops the fixture household's calls and actions and restores its fixture data. */
     resetDemo: () => tx(async () => {
       await q("DELETE FROM usage_samples WHERE household = $1", householdJson.id);
@@ -327,21 +341,6 @@ export async function openStore({ url, schema, recoverInterruptedOrders = false 
     }),
   };
   await store.addHousehold(householdJson as Household, DEMO_CODE); // no-op once seeded
-  if (recoverInterruptedOrders) {
-    // The checkout runner has restarted. The previous attempt may have reached the provider.
-    // ponytail: assumes one checkout runner; a second instance booting mid-checkout fails that order. Store a claim time and expire old claims when scaling out.
-    // Edited in JS, not jsonb_set, so the stored JSON keeps its key order (cart revisions hash it).
-    await tx(async () => {
-      for (const e of await many<Entry>(`SELECT data FROM actions WHERE data::jsonb #>> '{card,type}' = 'order'
-          AND data::jsonb #>> '{card,order,status}' = 'scheduled' AND (data::jsonb ->> 'done')::boolean
-          AND COALESCE((data::jsonb ->> 'placing')::boolean, false) FOR UPDATE`)) {
-        if (e.card.type !== "order") continue;
-        e.card.order.status = "failed";
-        delete e.placing;
-        await store.saveAction(e);
-      }
-    });
-  }
   return store;
 }
 export type Store = Awaited<ReturnType<typeof openStore>>;
