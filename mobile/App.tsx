@@ -3,7 +3,7 @@ import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, Te
 import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder } from "expo-audio";
-import type { ActionCard, CallResult, Diet, Goal, Lang, Weekday } from "../src/contracts.ts";
+import type { ActionCard, CallResult, Cart, Diet, Goal, Lang, Macros, MealChoice, Order, Weekday } from "../src/contracts.ts";
 
 // The API runs on the same machine as the Expo dev server, so default to its LAN host on :3000.
 const API = process.env.EXPO_PUBLIC_API_URL ?? `http://${(Constants.expoConfig?.hostUri ?? "localhost").split(":")[0]}:3000`;
@@ -326,16 +326,34 @@ function Owner({ householdId }: { householdId: string }) {
       setBusy(null);
     }
   };
-  const approve = (card: ActionCard) =>
+  const approve = (card: ActionCard, body?: { order: string }) =>
     act(card, async () => {
-      const r = await api<{ upiUrl?: string }>(`/actions/${card.id}/approve`, { method: "POST" });
+      const r = await postJson<{ upiUrl?: string }>(`/actions/${card.id}/approve`, body ?? {});
       const upi = r.upiUrl ?? (card.type === "advance" ? card.upiUrl : undefined);
       if (upi) await Linking.openURL(upi).catch(() => { throw new Error(`Approved. No UPI app opened ${upi}`); });
     });
   const answer = (card: ActionCard, option: string) => act(card, () => postJson(`/actions/${card.id}/answer`, { option }));
 
+  const [planning, setPlanning] = useState(false);
+  const planTomorrow = async () => {
+    setPlanning(true);
+    setErrors(({ plan: _, ...rest }) => rest);
+    try {
+      await postJson(`/households/${householdId}/meal-plan`, {});
+      await load();
+    } catch (e) {
+      setErrors((m) => ({ ...m, plan: `Plan tomorrow: ${(e as Error).message}` }));
+    } finally {
+      setPlanning(false);
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={s.feed}>
+      <Pressable style={[s.btn, s.planBtn, planning && s.disabled]} disabled={planning} onPress={planTomorrow}>
+        <Text style={s.btnText}>{planning ? "Planning…" : "🍽 Plan tomorrow"}</Text>
+      </Pressable>
+      {errors.plan && <Text style={s.error}>{errors.plan}</Text>}
       {errors.feed && <Text style={s.error}>{errors.feed}</Text>}
       {calls.length === 0 && !errors.feed && <Text style={[s.muted, s.centerText]}>No notes from the cook yet.</Text>}
       {calls.map((call) => (
@@ -347,7 +365,7 @@ function Owner({ householdId }: { householdId: string }) {
           {call.extraction.notes.map((n, i) => <Text key={i} style={s.muted}>📝 {n}</Text>)}
           {call.actions.map((card) => (
             <Card key={card.id} card={card} status={call.status[card.id]} busy={busy === card.id} error={errors[card.id]}
-              onApprove={() => approve(card)} onAnswer={(o) => answer(card, o)} />
+              onApprove={(body) => approve(card, body)} onAnswer={(o) => answer(card, o)} />
           ))}
         </View>
       ))}
@@ -355,14 +373,42 @@ function Owner({ householdId }: { householdId: string }) {
   );
 }
 
+function Lines({ cart }: { cart: Cart }) {
+  return cart.lines.map((l, i) => (
+    <View key={i} style={s.line}>
+      <Text style={s.lineItem}>{l.item}{l.brand ? ` · ${l.brand}` : ""}</Text>
+      <Text style={s.muted}>{l.qty} {l.unit}</Text>
+      <Text style={s.price}>{rupees(l.price)}</Text>
+    </View>
+  ));
+}
+
+function tomorrowAt8() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(8, 0, 0, 0);
+  return d.toISOString();
+}
+
+const when = (iso: string) =>
+  new Date(iso).toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+
+function orderStatus(o: Order) {
+  if (o.status === "scheduled") return o.scheduledFor ? `Scheduled for ${when(o.scheduledFor)}` : "Scheduled";
+  if (o.status === "placed") return `Placed${o.orderId ? ` · #${o.orderId}` : ""}`;
+  return o.status === "failed" ? "Failed to place" : "Cancelled";
+}
+
 function Card({ card, status, busy, error, onApprove, onAnswer }: {
   card: ActionCard;
   status: ActionStatus | undefined;
   busy: boolean;
   error: string | undefined;
-  onApprove: () => void;
+  onApprove: (body?: { order: string }) => void;
   onAnswer: (option: string) => void;
 }) {
+  const [choosing, setChoosing] = useState(false); // cart: Approve reveals when to order
+  const [tab, setTab] = useState<MealChoice>(card.type === "meal-plan" ? card.plan.suggested : "cook");
   const done = status !== undefined && status !== "pending";
   const action = (label: string, doneLabel: string, onPress: () => void) => (
     <Pressable style={[s.btn, (done || busy) && s.disabled]} disabled={done || busy} onPress={onPress}>
@@ -374,18 +420,18 @@ function Card({ card, status, busy, error, onApprove, onAnswer }: {
     body = (
       <>
         <Text style={s.h3}>Cart <Text style={s.muted}>· {card.cart.platform}</Text></Text>
-        {card.cart.lines.map((l, i) => (
-          <View key={i} style={s.line}>
-            <Text style={s.lineItem}>{l.item}{l.brand ? ` · ${l.brand}` : ""}</Text>
-            <Text style={s.muted}>{l.qty} {l.unit}</Text>
-            <Text style={s.price}>{rupees(l.price)}</Text>
-          </View>
-        ))}
+        <Lines cart={card.cart} />
         <View style={s.rowBetween}>
           <Text style={s.h3}>Total {rupees(card.cart.total)}</Text>
-          {card.needsApproval && <Text style={s.warn}>needs approval</Text>}
-          {action("Approve", "Approved ✓", onApprove)}
+          {card.needsApproval && !done && <Text style={s.warn}>needs approval</Text>}
+          {!choosing || done ? action("Approve", "Approved ✓", () => setChoosing(true)) : null}
         </View>
+        {choosing && !done && (
+          <View style={s.options}>
+            {action("Order now", "", () => onApprove({ order: "now" }))}
+            {action("Order tomorrow 8 AM", "", () => onApprove({ order: tomorrowAt8() }))}
+          </View>
+        )}
       </>
     );
   } else if (card.type === "advance") {
@@ -411,8 +457,60 @@ function Card({ card, status, busy, error, onApprove, onAnswer }: {
         {done && <Text style={s.muted}>Answered ✓</Text>}
       </>
     );
+  } else if (card.type === "order") {
+    const { order } = card;
+    body = (
+      <>
+        <View style={s.rowBetween}>
+          <Text style={s.h3}>Order</Text>
+          {order.cart.platform === "mock" && <Text style={s.warn}>demo order</Text>}
+        </View>
+        <Text style={s.body}>{orderStatus(order)}</Text>
+        <Lines cart={order.cart} />
+        <View style={s.rowBetween}>
+          <Text style={s.h3}>Total {rupees(order.cart.total)} <Text style={s.muted}>· cash on delivery</Text></Text>
+          {action("Confirm", "Confirmed ✓", () => onApprove())}
+        </View>
+      </>
+    );
   } else {
-    body = <Text style={s.muted}>{card.type} card: coming in the next update</Text>;
+    const { plan } = card;
+    const meals = plan[tab].meals;
+    const sum = (k: keyof Macros) => Math.round(meals.reduce((n, m) => n + m.macros[k], 0));
+    body = (
+      <>
+        <Text style={s.h3}>Tomorrow's meals <Text style={s.muted}>· {plan.date}</Text></Text>
+        <Text style={s.body}>{plan.reason}</Text>
+        <View style={s.tabs}>
+          {(["cook", "order"] as const).map((t) => (
+            <Pressable key={t} onPress={() => setTab(t)} style={[s.tab, tab === t && s.tabOn]}>
+              <Text style={[s.tabText, tab === t && s.tabTextOn]}>{t === "cook" ? "Cook" : "Order"}{plan.suggested === t ? " ★" : ""}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {meals.map((m, i) => (
+          <View key={i} style={s.meal}>
+            <Text style={s.meta}>{m.slot}</Text>
+            <Text style={s.body}>{m.dish}</Text>
+            <Text style={s.muted}>≈ {m.macros.proteinG}g protein · {m.macros.carbsG}g carbs · {m.macros.fiberG}g fiber · {m.macros.kcal} kcal</Text>
+            {m.searchUrl && tab === "order" && (
+              <Pressable onPress={() => void Linking.openURL(m.searchUrl!)}><Text style={s.link}>Find on Swiggy</Text></Pressable>
+            )}
+          </View>
+        ))}
+        <Text style={s.total}>Day ≈ {sum("proteinG")}g protein · {sum("carbsG")}g carbs · {sum("fiberG")}g fiber</Text>
+        {tab === "cook" && plan.cook.cart.lines.length > 0 && (
+          <>
+            <Text style={s.label}>Ingredients to buy · {rupees(plan.cook.cart.total)}</Text>
+            <Lines cart={plan.cook.cart} />
+          </>
+        )}
+        <View style={s.rowBetween}>
+          <Text style={s.muted}>{done ? "Picked ✓" : plan.suggested === tab ? "Suggested from your habits" : ""}</Text>
+          {card.options.includes(tab) && action(tab === "cook" ? "Cook this" : "Order this", "Picked ✓", () => onAnswer(tab))}
+        </View>
+      </>
+    );
   }
   return (
     <View style={s.card}>
@@ -459,6 +557,14 @@ const s = StyleSheet.create({
   ok: { color: accent, fontWeight: "700", fontSize: 18 },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
   error: { color: "#b3261e", marginTop: 6 },
+  planBtn: { alignSelf: "flex-end" },
+  tabs: { flexDirection: "row", gap: 6, marginVertical: 6 },
+  tab: { flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: 8, backgroundColor: "#f0ede6" },
+  tabOn: { backgroundColor: accent },
+  tabText: { fontWeight: "600", color: "#333" },
+  tabTextOn: { color: "#fff" },
+  meal: { paddingVertical: 6, borderBottomWidth: 1, borderColor: "#f0ede6" },
+  total: { fontWeight: "600", marginTop: 6 },
   form: { padding: 16, paddingBottom: 60, gap: 10 },
   field: { gap: 4 },
   label: { color: "#55524b", fontSize: 13, fontWeight: "600" },
