@@ -101,7 +101,7 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
     source={source} receiptId={source === "instamart" ? providerReceipt?.receiptId : undefined} />;
   if (purchased) return <View style={s.section}>
     <GroceryReceipt receipt={tracking?.receipt} state={tracking?.state} />
-    {track()}
+    {tracking?.state === "ordered" && track()}
   </View>;
   if (!reviewed || done) return <View style={s.section}>
     {showProvider ? <GroceryReceipt receipt={providerReceipt} /> : <>
