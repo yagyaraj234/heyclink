@@ -14,6 +14,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src", "eval", "fixtures"],
+  "include": ["src", "eval", "fixtures", "scripts"],
   "exclude": ["node_modules", "web"]
 }

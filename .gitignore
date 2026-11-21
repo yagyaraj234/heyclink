@@ -7,3 +7,9 @@ node_modules/
 eval/data/
 eval/out/
 *.log
+# local regression audio next to cases (real voices; never commit)
+fixtures/cases/*.webm
+fixtures/cases/*.wav
+fixtures/cases/*.m4a
+fixtures/cases/*.ogg
+fixtures/cases/*.mp3

@@ -12,7 +12,8 @@
     "test": "node --test",
     "test:live": "LIVE=1 node --env-file-if-exists=.env --test",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm typecheck && pnpm test",
+    "regress": "node scripts/regress.ts"
   },
   "dependencies": {
     "express": "^5.3.0"
