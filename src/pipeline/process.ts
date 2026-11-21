@@ -37,7 +37,7 @@ export const EXTRACTION_SCHEMA = {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
           requested: {
             type: "boolean",
-            description: "true if the cook asks for it or says it was/should be bought, brought or ordered, past tense included (le aana, chahiye, mangaya, mangwana, kharidna); false if it is only named while describing cooking steps (e.g. 'phir usmein nimbu daala')",
+            description: "false only when the item is merely named while describing cooking steps (e.g. 'phir usmein nimbu daala'); true for any shopping mention: asking for it, saying it was/should be bought or ordered, past tense included (le aana, chahiye, mangaya, mangwana), or asking its price or availability",
           },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },

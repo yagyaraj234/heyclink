@@ -251,6 +251,8 @@ test("processCall: an ingredient named while narrating a recipe is not bought (c
   assert.deepEqual(res.extraction, cooking01.gold);
   // strict structured outputs: the model must always answer whether the line was asked for
   assert.match(JSON.stringify(calls[0]!.schema), /"required":\["raw","requested"/);
+  // a price/availability question is still shopping (te-bigbasket-01 "... kismis dhara entha"), only narration is dropped
+  assert.match(JSON.stringify(calls[0]!.schema), /false only[^"]*cooking[^"]*price/i);
 });
 
 test("processCall: vague 'thoda sa palak' with qty 0 becomes a one-bunch question, never a 0 g ₹0 line", async () => {
