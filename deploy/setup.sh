@@ -38,8 +38,8 @@ APP=/opt/vfi
 git_() { git -c safe.directory="$APP" -C "$APP" "$@"; }
 build() {
   cd "$APP"
-  pnpm install --prod --frozen-lockfile
-  pnpm --dir web install --frozen-lockfile && pnpm --dir web build
+  # Server + web only: the workspace also holds mobile/ (Expo), which the box never needs.
+  pnpm install --frozen-lockfile --filter . --filter voice-for-india-web && pnpm --filter voice-for-india-web build
   chown -R vfi:vfi "$APP"
 }
 health() { # wait for the restarted service; prints the body, never the env
