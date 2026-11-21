@@ -46,3 +46,14 @@ test("planMeals: suggested follows the household's habit for that weekday, and t
   assert.equal(plan.suggested, "order");
   assert.match(plan.reason, /usually order on Sundays/);
 });
+
+test("planMeals: with no habits, order on the cook's off day and cook otherwise", async () => {
+  const hh: Household = { ...h, cook: { ...h.cook, offDays: ["sun"] } };
+
+  const sunday = await planMeals(hh, SUNDAY, { llm: fakeLlm().llm });
+  const monday = await planMeals(hh, "2026-11-23", { llm: fakeLlm().llm });
+
+  assert.equal(sunday.suggested, "order");
+  assert.equal(sunday.reason, "Lakshmi is off on Sunday");
+  assert.equal(monday.suggested, "cook");
+});
