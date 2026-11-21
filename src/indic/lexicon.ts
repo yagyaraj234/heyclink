@@ -11,13 +11,13 @@ const aliases: Record<string, string> = {
   dalia: "daliya|दलिया",
   "ragi-flour": "ragi ka atta|ragi atta|रागी का आटा",
   "toor-dal": "tur dal|tuvar dal|arhar dal|तूर दाल|तुअर दाल|अरहर दाल|kandi pappu|కందిపప్పు|కంది పప్పు",
-  "moong-dal": "mung dal|मूंग दाल|मूँग दाल",
+  "moong-dal": "mung dal|moong ki dal|मूंग दाल|मूँग दाल|मूंग की दाल",
   "masoor-dal": "masur dal|malka dal|मसूर दाल|मलका दाल",
-  "chana-dal": "चना दाल",
+  "chana-dal": "chane ki dal|चना दाल|चने की दाल",
   "urad-dal": "udad dal|urad daal|उड़द दाल",
   rajma: "राजमा",
   "kabuli-chana": "chole|safed chana|काबुली चना|छोले|सफेद चना",
-  "kala-chana": "काला चना",
+  "kala-chana": "kale chane|काला चना|काले चने",
   onion: "pyaaz|pyaz|pyaj|pyaaj|kanda|प्याज़|कांदा|काँदा|ullipaya|ఉల్లిపాయ|ఉల్లిపాయలు",
   potato: "aloo|alu|आलू|bangaladumpa|బంగాళాదుంప|బంగాళాదుంపలు",
   tomato: "tamatar|tamaatar|टमाटर",
@@ -66,9 +66,9 @@ const aliases: Record<string, string> = {
   ghee: "ghi|घी",
   cheese: "cheez|चीज़",
   cream: "malai|मलाई",
-  buttermilk: "chaach|chhachh|छाछ",
+  buttermilk: "chaach|chhachh|chhaachh|chhaas|छाछ|छास",
   eggs: "anda|ande|egg|अंडा|अंडे|अण्डे",
-  bread: "ब्रेड",
+  bread: "double roti|ब्रेड|डबल रोटी",
   pav: "paav|पाव",
   salt: "namak|नमक|uppu|ఉప్పు",
   sugar: "chini|cheeni|चीनी",
@@ -91,7 +91,7 @@ const aliases: Record<string, string> = {
   "black-pepper": "kali mirch|kaali mirch|काली मिर्च",
   "kasuri-methi": "kasoori methi|कसूरी मेथी",
   "chaat-masala": "चाट मसाला",
-  "sambar-powder": "sambhar powder|सांभर पाउडर|सांबर पाउडर",
+  "sambar-powder": "sambhar powder|sambar masala|sambhar masala|सांभर पाउडर|सांबर पाउडर|सांभर मसाला|सांबर मसाला",
   "mustard-oil": "sarson ka tel|sarso ka tel|सरसों का तेल",
   "sunflower-oil": "surajmukhi ka tel|सूरजमुखी का तेल",
   "groundnut-oil": "moongfali ka tel|मूंगफली का तेल",
@@ -100,7 +100,7 @@ const aliases: Record<string, string> = {
   peanuts: "moongfali|mungfali|groundnuts|मूंगफली|मूँगफली",
   cashew: "kaju|काजू",
   almonds: "badam|badaam|बादाम",
-  raisins: "kishmish|किशमिश|kismis|కిస్మిస్|కిస్మిస్ పళ్ళు",
+  raisins: "kishmish|किशमिश|kismis|किसमिस|కిస్మిస్|కిస్మిస్ పళ్ళు",
   coconut: "nariyal|नारियल",
   tamarind: "imli|इमली",
   vermicelli: "seviyan|sewai|सेवई|सेवइयां|सेवइयाँ",
@@ -110,22 +110,22 @@ const aliases: Record<string, string> = {
   biscuits: "biscuit|बिस्कुट|బిస్కెట్లు|మారీ క్లాసిక్ బిస్కెట్లు",
   namkeen: "नमकीन",
   chicken: "murga|मुर्गा|चिकन",
-  mutton: "मटन",
+  mutton: "bakre ka gosht|मटन|बकरे का गोश्त",
   fish: "machhli|machli|मछली",
-  prawns: "jhinga|झींगा",
-  "dishwash-liquid": "bartan dhone ka liquid|बर्तन धोने का लिक्विड",
-  "dishwash-bar": "vim bar|bartan dhone ka sabun|बर्तन धोने का साबुन",
-  "detergent-powder": "surf excel|washing powder|वाशिंग पाउडर",
-  "floor-cleaner": "pocha liquid|फर्श क्लीनर",
-  "toilet-cleaner": "टॉयलेट क्लीनर",
-  "bath-soap": "nahane ka sabun|नहाने का साबुन",
-  shampoo: "शैम्पू|शैम्पो",
-  toothpaste: "टूथपेस्ट",
-  "garbage-bags": "kachre ki thaili|कचरे की थैली",
-  tissue: "tissue paper|टिशू पेपर",
+  prawns: "jhinga|jheenga|झींगा",
+  "dishwash-liquid": "bartan dhone ka liquid|bartan dhone ka gel|बर्तन धोने का लिक्विड|बर्तन धोने का जेल",
+  "dishwash-bar": "vim bar|bartan dhone ka sabun|bartan ka sabun|बर्तन धोने का साबुन|बर्तन का साबुन",
+  "detergent-powder": "surf excel|washing powder|kapde dhone ka powder|वाशिंग पाउडर|कपड़े धोने का पाउडर",
+  "floor-cleaner": "pocha liquid|phenyl|finail|फर्श क्लीनर|फिनाइल|फिनायल",
+  "toilet-cleaner": "toilet saaf karne ka liquid|टॉयलेट क्लीनर|टॉयलेट साफ करने का लिक्विड",
+  "bath-soap": "sabun|nahane ka sabun|साबुन|नहाने का साबुन",
+  shampoo: "shampu|शैम्पू|शैम्पो|शैंपू",
+  toothpaste: "daant ka paste|dant ka paste|टूथपेस्ट|दाँत का पेस्ट|दांत का पेस्ट",
+  "garbage-bags": "kachre ki thaili|kachre ka bag|कचरे की थैली|कचरे का बैग",
+  tissue: "tissue paper|tishu|टिशू पेपर|टिशू",
   matchbox: "machis|माचिस",
   agarbatti: "अगरबत्ती",
-  "ashwagandha-tablets": "ashwagandha tablets|अश्वगंधा टैबलेट्स|अश्वगंधा की गोलियाँ",
+  "ashwagandha-tablets": "ashwagandha tablets|ashwagandha ki goli|ashwagandha ki goliyan|अश्वगंधा टैबलेट्स|अश्वगंधा की गोली|अश्वगंधा की गोलियाँ",
 };
 
 export const STT_KEYWORDS: string[] = [
@@ -149,6 +149,9 @@ for (const id of itemIds) {
 
 for (const id of itemIds) lexicon.set(normalize(id), id);
 
+// One edit can turn these cleaner names into unrelated words such as "phenol" and "final".
+const exactOnly = new Set(["phenyl", "finail"]);
+
 function oneEditApart(shorter: string, longer: string): boolean {
   if (shorter.length > longer.length) return oneEditApart(longer, shorter);
   if (longer.length - shorter.length > 1) return false;
@@ -168,7 +171,8 @@ export function resolveItem(raw: string): string | null {
   let match: string | null = null;
   for (const [alias, id] of lexicon) {
     // Keep the edges exact to avoid treating a distinct word like "makhana" as "makhan".
-    if (alias[0] !== key[0] || alias.at(-1) !== key.at(-1) || !oneEditApart(key, alias)) continue;
+    if (alias[0] !== key[0] || alias.at(-1) !== key.at(-1) || exactOnly.has(alias)) continue;
+    if (!oneEditApart(key, alias)) continue;
     if (match !== null && match !== id) return null;
     match = id;
   }
