@@ -58,4 +58,12 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
 
 **whisper-cpp (optional, offline STT).** Build whisper.cpp (`cmake -B build && cmake --build build -j`), copy `build/bin/whisper-cli` to `/usr/local/bin`, and download a ggml model. A 1 GB instance is too small for large-v3-turbo, so use a smaller model or a bigger box. whisper-cli may not read browser webm unless it was built with ffmpeg. Sarvam and OpenAI both accept webm directly.
 
-State is in memory: a restart clears calls and approvals and resets the household to `fixtures/household.json`.
+Households, calls, approved quantities, delivery records and reminders live in SQLite at `$DATA_DIR/vfi.db`. The default directory is `.data` under the server working directory. Keep this directory on persistent storage.
+
+### Grocery pilot
+
+Start the local API with `pnpm dev` and the mobile app with `pnpm --dir mobile start`. Sign up a household and use its join code on the cook phone. The demo household supports simulated orders. With the provider disabled, a new household can review a cart, open individual store links, and mark what it bought and received.
+
+For an approved Swiggy staging integration, set `INSTAMART_PUBLIC_ORIGIN` to the API's public HTTPS origin, register the exact OAuth callback `/instamart/callback` on that origin, and set `INSTAMART_STAGING=1`. Supply `INSTAMART_CLIENT_ID` if issued. The owner signs into Swiggy in their browser. Staging finishes on a review screen. Production hands off to the same account's Instamart storefront for final confirmation and payment.
+
+For locked-phone alerts, use an Expo development or standalone build linked to the household app's EAS project, configure APNs or FCM credentials, and tap **Enable grocery alerts** on the owner phone. The app reads the project ID from EAS config or `EXPO_PUBLIC_EAS_PROJECT_ID`. A project using enhanced push security also needs `EXPO_ACCESS_TOKEN` on the server. The scheduler checks pending alerts every minute.
