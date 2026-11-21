@@ -1,22 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { CallInput, CallResult, Extraction, GroceryLine, Household, Lang, Llm, Stt, Transcript, Unit } from "../contracts.ts";
+import type { CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt, Transcript } from "../contracts.ts";
 import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveBrand, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
+import type { Ambiguous, ExtractionWithAmbiguous, RecentCall } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
-
-/** A word that could mean several catalog items (चना → kabuli-chana | kala-chana); lane 2 turns it into a question card. */
-export interface Ambiguous {
-  raw: string;
-  qty: number;
-  unit: Unit;
-  candidates: string[];
-}
-/** Additive to the frozen contract: `ambiguous` is present only when non-empty. */
-export type PipelineExtraction = Extraction & { ambiguous?: Ambiguous[] };
-export type PipelineCallResult = CallResult & { extraction: PipelineExtraction };
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -93,7 +83,7 @@ const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telug
 const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen." +
   "\n- item is the generic product, never null for a branded catalog item: Tata Tea→tea, Surf Excel→detergent-powder, Vim bar→dishwash-bar, Amul doodh→milk; brand is the brand alone (tata, surf-excel, vim, amul)." +
   "\n- Spelling variants are one id: kishmish/kismis/किशमिश/किसमिस→raisins." +
-  "\n- References to earlier notes or orders ('wahi jo subah bola tha', 'woh daal', 'same as last time', 'aur ek') resolve from recentNotes (the household's latest voice notes, newest first) and recentOrders: use that item, and its brand and quantity unless new ones are said.";
+  "\n- References to earlier notes or orders ('wahi jo subah bola tha', 'woh daal', 'same as last time', 'aur ek') resolve from recentNotes (the household's latest voice notes, oldest to newest) and recentOrders: use that item, and its brand and quantity unless new ones are said.";
 
 function householdContext(h: Household, recent: RecentCall[]) {
   return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history, recentNotes: recent, dietRules: h.family.dietRules });
@@ -172,15 +162,10 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine |
 /** harness: false = eval baseline (plain LLM: no household context, no STT keywords, no indic pass). */
 export interface PipelineOptions {
   harness?: boolean;
-  recent?: RecentCall[]; // the household's last few calls, newest first; harness only
-}
-export interface RecentCall {
-  at: string;
-  transcript: string;
-  lines: Pick<GroceryLine, "item" | "qty" | "unit" | "brand">[];
+  recent?: RecentCall[]; // the household's last calls (≤5), oldest to newest; harness only
 }
 
-export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [] }: PipelineOptions = {}): Promise<PipelineExtraction> {
+export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [] }: PipelineOptions = {}): Promise<ExtractionWithAmbiguous> {
   const context = harness ? `Household: ${householdContext(household, recent)}\n` : "";
   const known = new Set(harness ? [...household.history, ...recent].flatMap((o) => o.lines.map((l) => l.item)) : []);
   const out = await ports.llm.json<LlmExtraction>({
@@ -190,7 +175,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     schemaName: "extraction",
   });
   const lines = out.groceries.map((l) => toLine(l, harness, known));
-  const extraction: PipelineExtraction = {
+  const extraction: ExtractionWithAmbiguous = {
     groceries: lines.filter((l): l is GroceryLine => l !== undefined && !("candidates" in l)),
     notes: out.notes,
   };
@@ -207,7 +192,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
 const TOO_LONG = /maximum limit of 30 seconds|batch API/i;
 
 /** fallbackStt: used only when `stt` hits Sarvam's length limit; defaults to OpenAI. */
-export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<PipelineCallResult> {
+export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<CallResult & { extraction: ExtractionWithAmbiguous }> {
   const t0 = performance.now();
   const opts: { lang?: Lang; keywords: string[] } = { keywords: options.harness === false ? [] : sttKeywords(household) };
   if (input.lang) opts.lang = input.lang;
