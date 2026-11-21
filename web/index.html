@@ -35,7 +35,7 @@
       a { color: var(--accent); } .upi { font-weight: 600; } code { font-size: 12px; word-break: break-all; color: var(--muted); }
       .error { margin: 0 20px 8px; padding: 8px 12px; border-radius: 8px; background: #fdecec; color: #9b1c1c; }
       .composer { display: flex; gap: 8px; align-items: center; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--panel); }
-      .composer .text { flex: 1; min-width: 0; font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+      .composer .text { flex: 1; min-width: 0; width: 0; font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
       .mic { width: 44px; height: 44px; border-radius: 50%; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
       .mic.on { background: #c0392b; border-color: #c0392b; animation: pulse 1s infinite; }
       .chip.pending { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; }
@@ -44,10 +44,14 @@
       button.small { font-size: 12px; padding: 3px 10px; background: var(--panel); color: var(--accent); }
       aside > .row { margin-bottom: 12px; } aside > .row h2 { margin: 0; }
       @keyframes pulse { 50% { box-shadow: 0 0 0 6px #c0392b33; } }
+      .card.base { background: transparent; border-style: dashed; color: var(--muted); }
+      .card.base .badge { margin-right: 4px; }
+      .card.base .chip { background: transparent; }
+      .compare { font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
       .file { cursor: pointer; font-size: 20px; } .file input { display: none; }
       aside { background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow-y: auto; font-size: 14px; }
       aside ul { margin: 0 0 14px; padding-left: 18px; } dl { margin: 0 0 14px; } dt { font-weight: 600; margin-top: 6px; } dd { margin: 0; }
-      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; height: auto; } main { height: 100vh; height: 100dvh; } .thread, header, .composer { padding-left: 12px; padding-right: 12px; } .reply { width: 100%; } .card { padding: 10px; } table { font-size: 13px; } aside { border-left: 0; border-top: 1px solid var(--line); } .bubble { max-width: 90%; } }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; height: auto; } main { height: 100vh; height: 100dvh; } .thread, header, .composer { padding-left: 12px; padding-right: 12px; } .reply { width: 100%; } .card { padding: 10px; } table { font-size: 13px; } aside { border-left: 0; border-top: 1px solid var(--line); } .bubble { max-width: 90%; } .compare .long { display: none; } }
     </style>
   </head>
   <body>
