@@ -88,7 +88,7 @@ export function CartTracking({cartId, ownerToken, tracking, reviewId, onReload}:
   return <View>
     {tracking?.state === "delivered" ? <Text>Delivered</Text> : tracking?.state === "ordered" ?
       <Button title="Mark delivered" disabled={working} onPress={() => void update({state:"delivered"})} /> : <>
-        <Button title="I placed this order" disabled={working} onPress={() => void update({state:"ordered"})} />
+        <Button title="I bought these items" disabled={working} onPress={() => void update({state:"ordered"})} />
         {tracking?.remindAt ? <Text>Reminder set for {new Date(tracking.remindAt).toLocaleString()}</Text> :
           <Button title={new Date().getHours() < 18 ? "Remind me at 6 PM today" : "Remind me at 6 PM tomorrow"} disabled={working} onPress={remind} />}
       </>}
