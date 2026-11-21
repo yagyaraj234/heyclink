@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { GroceryLine, Household } from "../contracts.ts";
+import type { ActionCard, Extraction, GroceryLine, Household } from "../contracts.ts";
 import householdJson from "../../fixtures/household.json" with { type: "json" };
 import items from "../../fixtures/items.json" with { type: "json" };
 import case01 from "../../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import case02 from "../../fixtures/cases/cook-hinglish-02.json" with { type: "json" };
 import { buildCart } from "./cart.ts";
+import { planActions } from "./plan.ts";
 
 const household = () => structuredClone(householdJson) as Household;
 const gold = (c: { gold: { groceries: unknown[] } }) => c.gold.groceries as GroceryLine[];
@@ -43,4 +44,52 @@ test("catalog prices every canonical item id", async () => {
   const lines = items.map((item): GroceryLine => ({ raw: item, item, qty: 1, unit: "packet", confidence: 1 }));
   const cart = await buildCart(lines, household());
   assert.deepEqual(cart.lines.filter((l) => !(l.price > 0)).map((l) => l.item), []);
+});
+
+const byType = <T extends ActionCard["type"]>(cards: ActionCard[], type: T) =>
+  cards.filter((c): c is Extract<ActionCard, { type: T }> => c.type === type);
+
+test("planActions on cook-hinglish-01: cart under limit + advance card with UPI link", async () => {
+  const cards = await planActions(case01.gold as Extraction, household());
+  assert.deepEqual(cards.map((c) => c.type), ["cart", "advance"]);
+  const [cart] = byType(cards, "cart");
+  assert.equal(cart?.cart.total, 196);
+  assert.equal(cart?.needsApproval, false);
+  const [adv] = byType(cards, "advance");
+  assert.equal(adv?.payee, "Lakshmi");
+  assert.deepEqual(adv?.advance, { amount: 500 });
+  assert.equal(adv?.needsApproval, true);
+  assert.equal(adv?.upiUrl, "upi://pay?pa=lakshmi@okaxis&pn=Lakshmi&am=500&cu=INR&tn=Advance");
+  assert.equal(new Set(cards.map((c) => c.id)).size, 2);
+});
+
+test("planActions needs approval only when total is strictly above approvalLimit", async () => {
+  const ex = { groceries: gold(case01), notes: [] } satisfies Extraction;
+  const at = await planActions(ex, { ...household(), approvalLimit: 196 });
+  const above = await planActions(ex, { ...household(), approvalLimit: 195 });
+  assert.equal(byType(at, "cart")[0]?.needsApproval, false);
+  assert.equal(byType(above, "cart")[0]?.needsApproval, true);
+});
+
+test("planActions turns confidence < 0.6 lines into questions and keeps them out of the cart", async () => {
+  const ex: Extraction = {
+    groceries: [
+      { raw: "do gaddi dhaniya", item: "coriander", qty: 2, unit: "bunch", confidence: 0.6 },
+      { raw: "thoda methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.59 },
+    ],
+    notes: [],
+  };
+  const cards = await planActions(ex, household());
+  assert.deepEqual(cards.map((c) => c.type), ["cart", "question"]);
+  assert.deepEqual(byType(cards, "cart")[0]?.cart.lines.map((l) => l.item), ["coriander"]);
+  const [q] = byType(cards, "question");
+  assert.equal(q?.text, 'Did Lakshmi mean 1 bunch Methi Leaves? (heard: "thoda methi")');
+  assert.deepEqual(q?.options, ["Yes, add it", "No, skip"]);
+});
+
+test("planActions with nothing confident and no advance yields only questions", async () => {
+  const ex: Extraction = { groceries: [{ raw: "woh wala", item: "atta", qty: 1, unit: "kg", confidence: 0.2 }], notes: ["hello"] };
+  const cards = await planActions(ex, household());
+  assert.deepEqual(cards.map((c) => c.type), ["question"]);
+  assert.deepEqual(await planActions({ groceries: [], notes: [] }, household()), []);
 });
