@@ -107,17 +107,13 @@ function Signup({ onDone }: { onDone: (householdId: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      // ponytail: body and response shapes guessed from the brief; POST /households isn't on any branch yet.
-      const r = await postJson<{ id?: string; householdId?: string; household?: { id: string }; code?: string; cookCode?: string }>("/households", {
+      const { id, cookCode } = await postJson<{ id: string; cookCode: string }>("/households", {
         owner: { name: f.ownerName.trim(), phone: f.ownerPhone.trim() },
         cook: { name: f.cookName.trim(), lang, upiId: f.upiId.trim(), monthlySalary: num(f.salary), offDays },
         approvalLimit: num(f.limit),
         goals: { goal, diet, ...(f.protein ? { proteinG: num(f.protein) } : {}) },
       });
-      const id = r.id ?? r.householdId ?? r.household?.id;
-      const code = r.code ?? r.cookCode;
-      if (!id || !code) throw new Error(`Unexpected response: ${JSON.stringify(r)}`);
-      setDone({ id, code });
+      setDone({ id, code: cookCode });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -174,11 +170,8 @@ function Join({ onJoin }: { onJoin: (householdId: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      // ponytail: response shape guessed from the brief; POST /join isn't on any branch yet.
-      const r = await postJson<{ id?: string; householdId?: string; household?: { id: string } }>("/join", { code: code.trim().toUpperCase() });
-      const id = r.householdId ?? r.household?.id ?? r.id;
-      if (!id) throw new Error(`Unexpected response: ${JSON.stringify(r)}`);
-      onJoin(id);
+      const { householdId } = await postJson<{ householdId: string }>("/join", { code: code.trim().toUpperCase() });
+      onJoin(householdId);
     } catch (e) {
       setError((e as Error).message);
     } finally {
