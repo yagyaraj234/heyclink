@@ -1,7 +1,10 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { createHash, createHmac, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import type { Store } from "./store.ts";
+import { cartRevision as revision } from "./store.ts";
+import type { Store, GroceryReceipt } from "./store.ts";
+import { makeIntent, acceptAdjustments, reconcile } from "./instamart-intent.ts";
+import type { InstamartIntent } from "./instamart-intent.ts";
 import type { Cart } from "../contracts.ts";
 import { connectInstamart, swiggyOrigin } from "./instamart-client.ts";
 import type { Instamart, RetailCart } from "./instamart-client.ts";
@@ -51,7 +54,7 @@ interface Session extends Ticket {
   options?: PickedPack[][];
   local?: string;
   bill?: string;
-  reviewNotes?: string[];
+
   busy?: boolean;
 }
 
@@ -65,7 +68,15 @@ function fail(status: number, message: string): never {
   throw Object.assign(new Error(message), { status });
 }
 
-function invoice(s: Session, cart: RetailCart, res: Response, updated = false, staging = false) {
+function invoice(
+  s: Session,
+  cart: RetailCart,
+  intent: InstamartIntent | undefined,
+  res: Response,
+  updated = false,
+  staging = false,
+  publish?: (receipt: Omit<GroceryReceipt, "receiptId">) => void,
+) {
   const invoiceAddress = cart.selectedAddressDetails?.address ?? cart.selectedAddress;
   if (
     !Array.isArray(cart.items) ||
@@ -76,11 +87,13 @@ function invoice(s: Session, cart: RetailCart, res: Response, updated = false, s
   ) {
     fail(409, "Swiggy could not confirm a bill and delivery address. Check your cart in Instamart.");
   }
-  checkedItems(cart.items, s.options);
+  const requested = new Set(intent?.items.flatMap((i) => (i.added ? [i.added.item] : [])));
+  checkedItems(cart.items, s.options, [], requested);
+  const lines = reconcile(intent, cart);
   const warnings = [
     cart.addressWarning,
     cart.cartWarning?.message,
-    ...(s.reviewNotes ?? []),
+    ...(intent?.notes ?? []),
     ...(cart.unserviceableItems ?? []).map((i) => i.itemName + " is unavailable"),
   ].filter(Boolean);
   const rows = cart.items
@@ -93,6 +106,24 @@ function invoice(s: Session, cart: RetailCart, res: Response, updated = false, s
   const details = `<p>Deliver to ${escape(invoiceAddress)}</p><ul>${rows}</ul><ul>${fees}</ul><p><strong>To pay ${escape(cart.billBreakdown.toPay.value)}</strong></p>${warnings.map((w) => `<p>${escape(w)}</p>`).join("")}`;
   const changed = !!s.bill && s.bill !== details;
   s.bill = details;
+  if (updated && !changed && publish) {
+    const eta = [
+      ...new Set(
+        intent?.items
+          .filter((i) => i.added && i.quantity > i.prior)
+          .map((i) => i.added?.eta)
+          .filter(Boolean),
+      ),
+    ].join(", ");
+    publish({
+      source: "instamart",
+      lines,
+      total: cart.billBreakdown.toPay.value,
+      fees: cart.billBreakdown.lineItems,
+      address: invoiceAddress,
+      ...(eta && { eta }),
+    });
+  }
   if (updated && !changed && staging)
     return void page(res, "Staging review complete", "<p>This cart uses seeded inventory. No payment was taken.</p>");
   if (updated && !changed) return void res.redirect(303, "https://www.swiggy.com/instamart");
@@ -232,7 +263,6 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
       session.until = Math.min(session.until, prior.until);
       if (prior.cartId === ticket.cartId) {
         session.address = prior.address;
-        session.reviewNotes = prior.reviewNotes;
       }
     }
     const sealed = store.linkedInstamart(provider + "/" + ticket.householdId);
@@ -308,7 +338,7 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
     if (revision(e.card.cart) !== s.snapshot) fail(409, "This cart changed. Reopen it from the app.");
     return e.card.cart;
   };
-  const revision = (cart: Cart) => createHash("sha256").update(JSON.stringify(cart)).digest("hex");
+
   const samePreparedCart = (s: Session) => {
     if (store.instamartClaimed(s.cartId) !== revision(currentCart(s)))
       fail(
@@ -339,14 +369,22 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
     store.saveInstamartLink(provider + "/" + s.householdId, seal(s.key, credential));
     res.redirect(303, store.instamartClaimed(s.cartId) ? "/instamart/prepared" : "/instamart/addresses");
   });
+  const readForReview = async (s: Session) => {
+    samePreparedCart(s);
+    const token = store.beginInstamartReview(s.cartId, s.snapshot);
+    const latest = await s.client!.cart();
+    samePreparedCart(s);
+    if (!store.isInstamartReviewCurrent(s.cartId, s.snapshot, token))
+      fail(409, "A newer review is open. Review the latest bill.");
+    return { latest, token };
+  };
   router.get("/instamart/prepared", async (req, res) => {
     const s = sessionOf(req);
     if (!s?.client || !store.instamartClaimed(s.cartId)) return void res.sendStatus(403);
-    const latest = await s.client.cart();
-    samePreparedCart(s);
-    s.address ??= latest.selectedAddressDetails?.id;
-    s.reviewNotes ??= ["Check the current Instamart cart. Requests to add these packs are sent only once."];
-    invoice(s, latest, res);
+    const { latest } = await readForReview(s);
+    const intent = store.instamartIntent(s.cartId);
+    s.address = intent?.address;
+    invoice(s, latest, intent, res);
   });
   router.get("/instamart/addresses", async (req, res) => {
     const s = sessionOf(req);
@@ -431,15 +469,21 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
         fail(409, "Check the existing cart and selected address in Swiggy first.");
       }
       const items = checkedItems(before.items, s.options, picked);
-      if (revision(currentCart(s)) !== s.local || !store.claimInstamart(s.cartId, s.local))
+      const intent = makeIntent(s.address, items, before.items, picked, notes);
+      if (revision(currentCart(s)) !== s.local || !store.claimInstamart(s.cartId, s.local, intent))
         fail(409, "This cart changed or is already being prepared. Check Swiggy.");
-      const cart = await s.client!.update(s.address, items);
-      s.reviewNotes = [
-        ...notes,
-        ...(cart.removedOutOfStockItems ?? []).map((i) => i.itemName + " was removed"),
-        ...(cart.reducedQuantityItems ?? []).map((i) => i.itemName + " reduced to " + i.cappedQuantity),
-      ];
-      invoice(s, cart, res);
+      const cart = await s
+        .client!.update(s.address, items)
+        .catch(() =>
+          fail(
+            502,
+            "Instamart did not acknowledge the cart update. Reopen this grocery request to check the cart without adding the packs again.",
+          ),
+        );
+      const adjusted = acceptAdjustments(intent, cart);
+      reconcile(adjusted, cart);
+      store.saveInstamartIntent(s.cartId, adjusted);
+      invoice(s, cart, adjusted, res);
     } finally {
       s.busy = false;
       updating.delete(s.householdId);
@@ -448,9 +492,10 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
   router.post("/instamart/continue", async (req, res) => {
     const s = formSession(req);
     if (!s.bill) fail(409, "Review your cart before continuing.");
-    const latest = await s.client!.cart();
-    samePreparedCart(s);
-    invoice(s, latest, res, true, config.staging);
+    const { latest, token } = await readForReview(s);
+    invoice(s, latest, store.instamartIntent(s.cartId), res, true, config.staging, (receipt) => {
+      store.saveInstamartReceipt(s.cartId, s.snapshot, receipt, token);
+    });
   });
   return router;
 }

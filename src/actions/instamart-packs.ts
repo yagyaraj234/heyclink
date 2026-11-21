@@ -28,7 +28,7 @@ function size(qty: number, unit: string): Size | undefined {
   const scale = units[unit];
   if (scale && Number.isFinite(qty) && qty > 0) return { unit: scale[0], amount: qty * scale[1] };
 }
-function parsePack(value?: string) {
+export function parsePack(value?: string) {
   const m = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/i.exec(value?.trim() ?? "");
   return m ? size(Number(m[1]), m[2]!.toLowerCase()) : undefined;
 }
@@ -98,9 +98,19 @@ export function packOption(line: CartLine, variant: Variation): PickedPack | und
 
 const invalidCart = (message: string) => Object.assign(new Error(message), { status: 409 });
 
-// Unmatched existing SKUs might be another brand of the same ingredient. Count them conservatively.
-export function checkedItems(existing: CartItem[], options: PickedPack[][] = [], picked: PickedPack[] = []) {
-  const bySku = new Map(options.flat().map((p) => [p.variant.skuId, p]));
+// Cart lines can include a brand prefix even when the provider omits a separate brand field.
+function matchesCartLabel(item: string, label: string): boolean {
+  const title = words(label);
+  return title.some((_, index) => sameGrocery(item, title.slice(index).join(" ")));
+}
+
+export function checkedItems(
+  existing: CartItem[],
+  options: PickedPack[][] = [],
+  picked: PickedPack[] = [],
+  requested = new Set(picked.map((p) => p.item)),
+) {
+  const bySku = new Map(options.flat().filter((p) => requested.has(p.item)).map((p) => [p.variant.skuId, p]));
   const result = existing.map(({ spinId, skuId, quantity }) => ({ spinId, skuId, quantity }));
   const totals: Record<Size["unit"], Map<string, number>> = {
     g: new Map(),
@@ -116,26 +126,25 @@ export function checkedItems(existing: CartItem[], options: PickedPack[][] = [],
     }
   };
   for (const item of existing) {
-    const pack = parsePack(item.itemVariant);
-    if (!pack || !item.skuId || !item.spinId || !Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
-      throw invalidCart("Review the existing cart in Swiggy. A pack size could not be verified.");
+    if (!item.skuId || !item.spinId || !Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
+      throw invalidCart("Check the existing items and quantities in Swiggy.");
     }
-    const candidates = Object.keys(catalog).filter((id) => sameGrocery(id, item.itemName));
     const known = bySku.get(item.skuId);
+    const candidates = known ? [known.item] : [...requested].filter((id) => matchesCartLabel(id, item.itemName));
+    if (!candidates.length) continue;
+    const pack = parsePack(item.itemVariant);
+    if (!pack || candidates.length !== 1) throw invalidCart("Confirm the existing pack sizes in Swiggy before adding groceries.");
     if (
       known &&
       (pack.unit !== known.size.unit || pack.amount !== known.size.amount || item.spinId !== known.variant.spinId)
     ) {
       throw invalidCart("The retailer returned conflicting pack sizes. Check the cart in Swiggy.");
     }
-    const canonical = known?.item ?? (candidates.length === 1 ? candidates[0] : undefined);
-    const expected = canonical ? units[catalog[canonical]?.unit ?? ""]?.[0] : undefined;
-    if (
-      (!canonical && (pack.unit === "pack" || pack.unit === "piece")) ||
-      (expected && expected !== "pack" && expected !== pack.unit)
-    )
+    const canonical = candidates[0]!;
+    const expected = units[catalog[canonical]?.unit ?? ""]?.[0];
+    if (expected && expected !== "pack" && expected !== pack.unit)
       throw invalidCart("Confirm the existing pack sizes in Swiggy before adding groceries.");
-    record(canonical ?? "", pack, item.quantity);
+    record(canonical, pack, item.quantity);
   }
   for (const p of picked) {
     record(p.item, p.size, p.count);
@@ -146,16 +155,11 @@ export function checkedItems(existing: CartItem[], options: PickedPack[][] = [],
     else result.push({ skuId: p.variant.skuId, spinId: p.variant.spinId, quantity: p.count });
   }
   for (const unit of ["g", "ml", "piece", "pack"] as const) {
-    const ledger = totals[unit];
-    // Unknown labels may refer to the same grocery as any identified SKU of this physical unit.
-    const unknown = ledger.get("") ?? 0;
-    for (const [item, amount] of ledger) {
-      const total = item ? amount + unknown : unknown;
+    for (const [item, total] of totals[unit]) {
       if (total > limits[unit]) {
-        const label = item ? (catalog[item]?.name ?? item) : "Unidentified groceries";
-        const uncertainty = unknown && item ? " including unidentified packs" : "";
+        const label = catalog[item]?.name ?? item;
         throw invalidCart(
-          `${label}: ${total} ${unit}${uncertainty}. The household limit is ${limits[unit]} ${unit}. Adjust the cart in Swiggy.`,
+          `${label}: ${total} ${unit}. The household limit is ${limits[unit]} ${unit}. Adjust the cart in Swiggy.`,
         );
       }
     }

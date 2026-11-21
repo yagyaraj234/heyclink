@@ -9,8 +9,11 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
   const { card } = entry;
   if (card.type !== "order") throw new Error(`action ${card.id} is not an order`);
   // claim before the await, so an overlapping run (or a second approve) skips this order
-  entry.placing = true;
-  store.saveAction(entry);
+  if (!store.claimOrder(card.id)) {
+    const current = store.action(card.id);
+    if (current?.card.type !== "order") throw new Error("Order no longer exists");
+    return current.card.order;
+  }
   try {
     if (!matchesHouseholdBill(card.order.cart)) throw new Error("Cart quantities or prices need a new review.");
     const { orderId } = await swiggy.checkout(card.order.cart);
@@ -19,8 +22,7 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
     console.error(`order ${card.id} failed:`, err);
     card.order = { ...card.order, status: "failed" };
   }
-  delete entry.placing;
-  store.saveAction(entry);
+  store.finishOrder(entry);
   return card.order;
 }
 

@@ -23,12 +23,12 @@ export function openAlerts(db: DatabaseSync) {
     },
     async deliver(now: number, push: Push) {
       const rows = db.prepare(`SELECT c.*, d.token FROM cart_alerts c JOIN owner_devices d USING(household)
-        JOIN actions a ON a.id=c.cart WHERE sent=0 AND due<=? AND NOT (a.data ->> '$.done') AND json_array_length(a.data,'$.card.cart.lines') > 0
+        JOIN actions a ON a.id=c.cart WHERE sent=0 AND due<=? AND NOT (a.data ->> '$.done') AND json_array_length(a.data,'$.card.cart.lines') > 0 AND (c.kind <> 'ready' OR a.call IS NOT NULL)
         ORDER BY due LIMIT 50`).all(now) as {cart:string; kind:"ready"|"reminder"; token:string; attempts:number}[];
       for (const row of rows) {
         // Lease before network I/O, including across restarts. Transient failures back off.
         const next = now + Math.min(3600_000, 60_000 * 2 ** Math.min(row.attempts, 6));
-        if (!db.prepare("UPDATE cart_alerts SET due=?, attempts=attempts+1 WHERE cart=? AND kind=? AND sent=0 AND due<=? AND EXISTS (SELECT 1 FROM actions WHERE id=cart AND NOT (data ->> '$.done') AND json_array_length(data,'$.card.cart.lines') > 0)")
+        if (!db.prepare("UPDATE cart_alerts SET due=?, attempts=attempts+1 WHERE cart=? AND kind=? AND sent=0 AND due<=? AND EXISTS (SELECT 1 FROM actions WHERE id=cart AND NOT (data ->> '$.done') AND json_array_length(data,'$.card.cart.lines') > 0 AND (cart_alerts.kind <> 'ready' OR actions.call IS NOT NULL))")
           .run(next, row.cart, row.kind, now).changes) continue;
         try {
           await push(row.token, row.cart, row.kind);

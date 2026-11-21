@@ -38,6 +38,33 @@ async function serve(stt: Stt = fakeStt(), deps: Partial<AppDeps> = {}) {
   return { base, post, close: () => new Promise((r) => server.close(r)) };
 }
 
+test("pending demo carts and orders saved before review IDs get a current bill on restart", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "vfi-old-carts-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "legacy.db");
+  const before = openStore(file);
+  const cart = { platform: "mock" as const, total: 7, lines: [
+    { item: "eggs", qty: 6, unit: "piece" as const, price: 7, searchUrl: "old" },
+  ] };
+  before.addAction({ householdId: "h1", done: false, card: { id: "legacy-cart", type: "cart", cart, needsApproval: false } });
+  before.addAction({ householdId: "h1", done: false, card: { id: "legacy-order", type: "order", order: { cart, status: "scheduled" }, needsApproval: true } });
+  const { base, post, close } = await serve(fakeStt(), { store: openStore(file) });
+  t.after(close);
+  const feed = await (await fetch(base + "/households/h1/actions")).json();
+  const updatedCart = feed.find((e: {card: ActionCard}) => e.card.id === "legacy-cart").card.cart;
+  const updatedOrder = feed.find((e: {card: ActionCard}) => e.card.id === "legacy-order").card.order.cart;
+  for (const bill of [updatedCart, updatedOrder]) {
+    assert.ok(bill.reviewId);
+    assert.equal(bill.total, 48);
+    assert.deepEqual(bill.lines[0].pack, { count: 1, size: 6, unit: "piece" });
+  }
+  assert.equal((await post("/actions/legacy-cart/approve", { order: "now" })).status, 409);
+  assert.equal((await post("/actions/legacy-cart/approve", { order: "now", reviewId: updatedCart.reviewId })).status, 200);
+  assert.equal((await post("/actions/legacy-order/approve")).status, 409);
+  const placed = await post("/actions/legacy-order/approve", { reviewId: updatedOrder.reviewId });
+  assert.equal((await placed.json()).order.status, "placed");
+});
+
 test("POST /calls with a transcript returns cards; approving them pays and updates memory", async (t) => {
   const { base, post, close } = await serve();
   t.after(close);
@@ -661,6 +688,13 @@ test("an owner edits the cart, reviews its new bill, and confirms exactly that o
   const call = await (await post("/calls", { transcript: case01.transcript, householdId: "h1" })).json();
   const original = call.actions[0];
   assert.equal(typeof original.cart.reviewId, "string");
+  for (const [qty, unit] of [[3, "kg"], [3000, "g"], [500, "kg"]]) {
+    const large = await post(`/actions/${original.id}/review`, {
+      reviewId: original.cart.reviewId, edits: [{ index: 0, qty, unit }],
+    });
+    assert.equal(large.status, 422);
+    assert.match((await large.json()).error, /exceeds the household limit for Atta/i);
+  }
   const edit = { reviewId: original.cart.reviewId, edits: [{ index: 0, qty: 1, unit: "kg" }, { index: 1, qty: 0, unit: "bunch" }] };
   const edited = await post(`/actions/${original.id}/review`, edit);
   assert.equal(edited.status, 200);
@@ -1046,8 +1080,8 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   assert.match(choices, /Fresh onion/);
   assert.doesNotMatch(choices, /Wholesale onion|Commercial crate|Seasoning/);
   assert.equal((await form("/instamart/prepare", { csrf: "wrong", line0: "sku-o" }, cookie)).status, 403);
-  const rice = { ...existing, itemName: "Rice", skuId: "rice-sku", spinId: "rice-spin", itemVariant: "5 kg" };
-  cartItems = [rice];
+  const altOnions = { ...existing, itemName: "Brand B Red Onions", skuId: "brand-b", spinId: "brand-b", itemVariant: "2 kg" };
+  cartItems = [altOnions];
   const bulkBefore = await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie);
   assert.equal(bulkBefore.status, 409);
   assert.match(await bulkBefore.text(), /household limit/);
@@ -1059,10 +1093,11 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
   cartItems = [{ ...onion, spinId: "other", skuId: "other", itemVariant: "1 pack" }];
   assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
-  cartItems = [{ ...existing, itemVariant: "bulk crate" }];
+  cartItems = [{ ...altOnions, itemVariant: "bulk crate" }];
   assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
-  // A different ingredient can fill its own household limit.
-  cartItems = [{ ...existing, itemVariant: "2 kg" }];
+  // The owner already chose this unrelated item.
+  existing.itemVariant = "5 kg";
+  cartItems = [existing];
   const nextCall = (await (await post("/calls", { householdId: owner.id, transcript: "onion" })).json()) as CallResult;
   const nextCart = nextCall.actions.find((c) => c.type === "cart")!;
   const another = await requestHandoff(base, nextCart, owner.ownerToken);
@@ -1099,21 +1134,21 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   const existingBill = await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } });
   assert.match(await existingBill.text(), /₹52/);
   // Another device changes the retailer cart after preparation, without changing the app card.
-  cartItems = [onion, { ...rice, itemVariant: "1.5 kg" }, { ...rice, skuId: "rice-2", spinId: "rice-2", itemVariant: "1000 g" }];
+  cartItems = [onion, altOnions];
   const bulkBill = await form("/instamart/continue", { csrf }, cookie);
   assert.equal(bulkBill.status, 409);
-  assert.match(await bulkBill.text(), /rice.*2500 g.*household limit.*2000 g/i);
+  assert.match(await bulkBill.text(), /onion.*2500 g.*household limit.*2000 g/i);
   const bulkReopen = await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } });
   assert.equal(bulkReopen.status, 409);
   assert.equal(methods.filter(name => name === "update_cart").length, 1);
-  cartItems = [onion, { ...existing, skuId: "sack", spinId: "sack", itemName: "Family value sack", itemVariant: "1 piece" }];
+  cartItems = [onion, { ...altOnions, itemVariant: "1 piece" }];
   const unknownPack = await form("/instamart/continue", { csrf }, cookie);
   assert.equal(unknownPack.status, 409);
   assert.match(await unknownPack.text(), /pack sizes/);
   cartItems = [{ ...existing, itemName: "Bread", skuId: "loaf", spinId: "loaf", itemVariant: "300 g", quantity: 4 }];
-  const tooManyLoaves = await form("/instamart/continue", { csrf }, cookie);
-  assert.equal(tooManyLoaves.status, 409);
-  assert.match(await tooManyLoaves.text(), /bread.*4 pack.*household limit.*3 pack/i);
+  const replaced = await form("/instamart/continue", { csrf }, cookie);
+  assert.equal(replaced.status, 409);
+  assert.match(await replaced.text(), /does not match/);
   cartItems = [existing, onion];
   payable = "₹56";
   const changed = await form("/instamart/continue", { csrf }, cookie);
@@ -1175,4 +1210,267 @@ test("confirmed household history uses the purchased pack, even when the cook re
   assert.deepEqual(household.history.map((entry: Household["history"][number]) => entry.lines), [
     [{item:"onion", qty:500, unit:"g"}]
   ]);
+});
+
+async function retailerScenario(t: import("node:test").TestContext, result: "timeout" | "adjusted") {
+  const product = (item: string, quantity: number, weight: string) => ({
+    itemName: item,
+    skuId: item,
+    spinId: item,
+    itemVariant: weight,
+    quantity,
+    discountedFinalPrice: 20,
+    isInStockAndAvailable: true,
+  });
+  const stock = [
+    product("onion", 1, "400 g"),
+    product("rice", 1, "5 kg"),
+    product("soap", 1, "Family bar"),
+    product("snacks", 2, "Pack of 2"),
+  ];
+  let contents = stock;
+  let payable = "₹105";
+  let unavailable: typeof contents = [];
+  let read: (() => Promise<void>) | undefined;
+  let writes = 0;
+  const invoice = () => ({
+    items: contents,
+    cartTotalAmount: payable,
+    selectedAddressDetails: { id: "home", address: "House 7" },
+    unserviceableItems: unavailable,
+    billBreakdown: { lineItems: [{ label: "Delivery", value: "₹5" }], toPay: { value: payable } },
+  });
+  const network: typeof fetch = async (url, init) => {
+    if (String(url).endsWith("/auth/token")) return Response.json({ access_token: "session", expires_in: 3600 });
+    const msg = JSON.parse(String(init?.body));
+    const rpc = (data: unknown) => Response.json({ jsonrpc: "2.0", id: msg.id, result: data });
+    if (msg.method === "initialize") return rpc({ protocolVersion: "2025-03-26" });
+    if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const ok = (data: unknown) => rpc({ structuredContent: { success: true, data } });
+    const args = msg.params.arguments;
+    switch (msg.params.name) {
+      case "get_addresses":
+        return ok({ addresses: [{ id: "home", addressLine: "House 7" }], pagination: { hasMore: false } });
+      case "get_cart": {
+        const snapshot = invoice();
+        if (read) await read();
+        return ok(snapshot);
+      }
+      case "search_products": {
+        const item = args.query;
+        return ok({
+          products: [
+            {
+              displayName: item,
+              inStock: true,
+              isAvail: true,
+              variations: [
+                {
+                  skuId: item,
+                  spinId: item,
+                  displayName: item,
+                  quantityDescription: item === "onion" ? "400 g" : "500 g",
+                  isInStockAndAvailable: true,
+                  price: { offerPrice: 20 },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      case "update_cart": {
+        writes++;
+        assert.deepEqual(
+          args.items.map((i: { skuId: string; quantity: number }) => [i.skuId, i.quantity]),
+          [
+            ["onion", 3],
+            ["rice", 1],
+            ["soap", 1],
+            ["snacks", 2],
+            ["tomato", 1],
+          ],
+        );
+        if (result === "timeout") throw Error("Lost response");
+        contents = [product("onion", 2, "400 g"), ...stock.slice(1)];
+        return ok({
+          ...invoice(),
+          reducedQuantityItems: [{ spinId: "onion", itemName: "onion", requestedQuantity: 3, cappedQuantity: 2 }],
+          removedOutOfStockItems: [product("tomato", 1, "500 g")],
+        });
+      }
+      default:
+        throw Error("Unexpected provider tool");
+    }
+  };
+  const { post, base, close } = await serve(undefined, {
+    instamart: { origin: "https://kitchen.example", clientId: "kitchen", network },
+    llm: llmReplying({
+      groceries: [
+        { item: "onion", qty: 750, unit: "g", confidence: 1, raw: "750 g onion" },
+        { item: "tomato", qty: 500, unit: "g", confidence: 1, raw: "500 g tomato" },
+      ],
+      notes: [],
+    }),
+  });
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  const call = (await (
+    await post("/calls", { householdId: owner.id, transcript: "750 g onion and 500 g tomato" })
+  ).json()) as CallResult;
+  const card = call.actions.find((a) => a.type === "cart")!;
+  const form = (path: string, data: Record<string, string>, cookie = "") =>
+    fetch(base + path, { method: "POST", redirect: "manual", headers: { cookie }, body: new URLSearchParams(data) });
+  const open = async () => {
+    const { url } = await (await requestHandoff(base, card, owner.ownerToken)).json();
+    return form("/instamart/open", { ticket: new URL(url).hash.slice(1) });
+  };
+  const start = await open();
+  const cookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  const state = new URL(start.headers.get("location")!).searchParams.get("state");
+  const addresses = await (
+    await fetch(base + "/instamart/callback?code=owner&state=" + state, { headers: { cookie } })
+  ).text();
+  const csrf = addresses.match(/name="csrf" value="([^"]+)"/)![1]!;
+  await form("/instamart/variants", { address: "home", csrf }, cookie);
+  const prepare = await form("/instamart/prepare", { line0: "onion", line1: "tomato", csrf }, cookie);
+  const reopen = async () => {
+    const redirected = await open();
+    const key = redirected.headers.get("set-cookie")!.split(";")[0]!;
+    const review = await fetch(base + "/instamart/prepared", { headers: { cookie: key } });
+    const html = await review.text();
+    const token = html.match(/name="csrf" value="([^"]+)"/)?.[1];
+    return { status: review.status, html, proceed: () => form("/instamart/continue", { csrf: token ?? "" }, key) };
+  };
+  const receipt = async () => {
+    const res = await fetch(base + "/calls/" + call.callId, { headers: { authorization: "Bearer " + owner.ownerToken } });
+    return (await res.json()).tracking?.[card.id]?.receipt;
+  };
+  const order = (receiptId: string) =>
+    fetch(base + "/actions/" + card.id + "/tracking", {
+      method: "POST",
+      headers: { authorization: "Bearer " + owner.ownerToken, "content-type": "application/json" },
+      body: JSON.stringify({
+        state: "ordered",
+        source: "instamart",
+        receiptId,
+        reviewId: (card.cart as { reviewId?: string }).reviewId,
+      }),
+    });
+  const pauseRead = () => {
+    const reached = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    read = () => {
+      read = undefined;
+      reached.resolve();
+      return release.promise;
+    };
+    return { reached: reached.promise, release: release.resolve };
+  };
+  return {
+    prepare,
+    reopen,
+    writes: () => writes,
+    stock,
+    product,
+    set: (items: typeof contents) => {
+      contents = items;
+    },
+    order,
+    receipt,
+    pauseRead,
+    setAmount: (amount: string) => {
+      payable = amount;
+    },
+    setUnavailable: (items: typeof contents) => {
+      unavailable = items;
+    },
+    history: async () => ((await (await fetch(base + "/households/" + owner.id)).json()) as Household).history,
+  };
+}
+
+test("indeterminate Instamart updates recover only the full intended retailer cart", async (t) => {
+  const flow = await retailerScenario(t, "timeout");
+  assert.equal(flow.prepare.status, 502);
+  assert.match(await flow.prepare.text(), /Reopen.*without adding/i);
+  const unchanged = await flow.reopen();
+  assert.equal(unchanged.status, 409);
+  assert.doesNotMatch(unchanged.html, /Continue to Swiggy/);
+  const intended = [flow.product("onion", 3, "400 g"), ...flow.stock.slice(1), flow.product("tomato", 1, "500 g")];
+  flow.set(intended.map((i) => i.skuId === "soap" ? { ...i, itemVariant: "Trial bar" } : i));
+  assert.equal((await flow.reopen()).status, 409);
+  flow.set(intended);
+  const recovered = await flow.reopen();
+  assert.equal(recovered.status, 200);
+  assert.equal((await recovered.proceed()).status, 303);
+  assert.equal(flow.writes(), 1);
+  const receipt = await flow.receipt();
+  assert.deepEqual(receipt.lines, [
+    { item: "onion", qty: 800, unit: "g", pack: { size: 400, unit: "g", count: 2 }, price: 40 },
+    { item: "tomato", qty: 500, unit: "g", pack: { size: 500, unit: "g", count: 1 }, price: 20 },
+  ]);
+  assert.deepEqual(await flow.history(), []);
+  assert.equal((await flow.order(receipt.receiptId)).status, 200);
+  assert.deepEqual(
+    (await flow.history()).map((h) => h.lines),
+    [
+      [
+        { item: "onion", qty: 800, unit: "g" },
+        { item: "tomato", qty: 500, unit: "g" },
+      ],
+    ],
+  );
+});
+
+test("Instamart receipts exclude prior stock, removed items and capped packs", async (t) => {
+  const flow = await retailerScenario(t, "adjusted");
+  assert.equal(flow.prepare.status, 200);
+  assert.equal(await flow.receipt(), undefined);
+  const partial = await flow.reopen();
+  assert.match(partial.html, /tomato was removed/);
+  assert.match(partial.html, /onion reduced to 2/);
+  assert.match(partial.html, /rice · 1 × 5 kg/);
+  assert.match(partial.html, /soap · 1 × Family bar/);
+  assert.match(partial.html, /snacks · 2 × Pack of 2/);
+  assert.equal((await partial.proceed()).status, 303);
+  const receipt = await flow.receipt();
+  assert.deepEqual(receipt.lines, [
+    { item: "onion", qty: 400, unit: "g", pack: { size: 400, unit: "g", count: 1 }, price: 20 },
+  ]);
+  assert.deepEqual(receipt.fees, [{ label: "Delivery", value: "₹5" }]);
+  assert.equal(receipt.total, "₹105");
+  assert.equal(receipt.address, "House 7");
+  assert.equal((await flow.order(receipt.receiptId)).status, 200);
+  assert.deepEqual(
+    (await flow.history()).map((h) => h.lines),
+    [[{ item: "onion", qty: 400, unit: "g" }]],
+  );
+  assert.equal(flow.writes(), 1);
+});
+
+test("changed retailer bill invalidates the old owner receipt and fences overlapping reviews", async (t) => {
+  const flow = await retailerScenario(t, "adjusted");
+  assert.equal(flow.prepare.status, 200);
+  const first = await flow.reopen();
+  assert.equal((await first.proceed()).status, 303);
+  const original = await flow.receipt();
+  const gate = flow.pauseRead();
+  const olderRequest = first.proceed();
+  await gate.reached;
+  flow.setAmount("₹123");
+  const fresh = await flow.reopen();
+  gate.release();
+  assert.equal(fresh.status, 200);
+  assert.equal((await olderRequest).status, 409);
+  assert.equal(await flow.receipt(), undefined);
+  assert.equal((await flow.order(original.receiptId)).status, 409);
+  assert.equal((await fresh.proceed()).status, 303);
+  const latest = await flow.receipt();
+  assert.equal(latest.total, "₹123");
+  assert.notEqual(original.receiptId, latest.receiptId);
+  // The provider can flag an included product separately from its in-stock field.
+  flow.setUnavailable([flow.product("onion", 2, "400 g")]);
+  assert.equal((await flow.reopen()).status, 409);
+  assert.equal(await flow.receipt(), undefined);
+  assert.equal((await flow.order(latest.receiptId)).status, 409);
+  assert.equal(flow.writes(), 1);
 });

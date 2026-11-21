@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ActionCard, Cart } from "../contracts.ts";
+import type { ActionCard, CallResult, Cart } from "../contracts.ts";
 import { openStore } from "./store.ts";
 import type { Store } from "./store.ts";
 import { runDue } from "./orders.ts";
 import type { Swiggy } from "./swiggy.ts";
 
-const cart: Cart = {
+const cart: Cart & {reviewId: string} = {
+  reviewId: "reviewed-atta",
   lines: [{ item: "atta", qty: 2, unit: "kg", brand: "aashirvaad", price: 132, searchUrl: "https://www.swiggy.com/instamart/search?query=aashirvaad%20atta" }],
   total: 132,
   platform: "mock",
@@ -43,6 +44,7 @@ const NOW = new Date("2026-11-22T03:30:00.000Z"); // 9 AM IST
 test("runDue places confirmed orders that are due, exactly once", async () => {
   const store = openStore();
   const { swiggy, carts } = fakeSwiggy();
+  const history = store.household("h1")!.history.length;
   addOrder(store, "due", "2026-11-22T03:00:00.000Z");
   addOrder(store, "later", "2026-11-22T05:00:00.000Z");
   addOrder(store, "unconfirmed", "2026-11-22T03:00:00.000Z", false);
@@ -55,6 +57,7 @@ test("runDue places confirmed orders that are due, exactly once", async () => {
 
   assert.deepEqual(await runDue(NOW, store, swiggy), []);
   assert.equal(carts.length, 1);
+  assert.equal(store.household("h1")!.history.length, history + 1);
 });
 
 test("runDue runs that overlap still check out once", async () => {
@@ -74,11 +77,13 @@ test("runDue runs that overlap still check out once", async () => {
 test("a failed checkout marks the order failed and is not retried", async () => {
   const store = openStore();
   const { swiggy, carts } = fakeSwiggy({ fail: true });
+  const history = store.household("h1")!.history;
   addOrder(store, "due", "2026-11-22T03:00:00.000Z");
 
   const [order] = await runDue(NOW, store, swiggy);
   assert.equal(order?.status, "failed");
   assert.equal(orderOf(store, "due").status, "failed");
+  assert.deepEqual(store.household("h1")!.history, history);
   assert.deepEqual(await runDue(NOW, store, swiggy), []);
   assert.equal(carts.length, 1);
 });
@@ -132,9 +137,25 @@ test('a cart emptied before the notification is sent stays silent', async () => 
   const store = openStore();
   store.alerts.register('h1','ExpoPushToken[test]');
   const card = {type:'cart',id:'empty',needsApproval:true,cart} satisfies ActionCard;
-  store.addAction({householdId:'h1',done:false,card});
+  store.addAction({householdId:'h1',callId:'note-with-items',done:false,card});
   store.saveAction({householdId:'h1',done:false,card:{...card,cart:{...cart,lines:[],total:0}}});
   const deliveries: string[] = [];
   await runDue(new Date(),store,fakeSwiggy().swiggy,async (_,id) => { deliveries.push(id); });
   assert.deepEqual(deliveries,[]);
+});
+
+test("standalone meal ingredients and empty cook lists do not notify the owner", async () => {
+  const store = openStore();
+  store.alerts.register("h1","ExpoPushToken[demo]");
+  const note: CallResult = {callId:"cook-note",transcript:{text:"pyaaz",lang:"hi",provider:"fake"},extraction:{groceries:[],notes:[]},actions:[],
+    timings:{sttMs:0,extractMs:0,planMs:0,totalMs:0}};
+  store.addCall(note,"h1",NOW.toISOString());
+  store.addAction({householdId:"h1",done:false,card:{id:"owner-meal",type:"cart",cart,needsApproval:false}});
+  // An earlier release already queued this owner-created cart before the server restarted.
+  store.alerts.queue("h1","owner-meal","ready",0);
+  store.addAction({householdId:"h1",callId:"cook-note",done:false,card:{id:"empty-list",type:"cart",cart:{...cart,lines:[],total:0},needsApproval:false}});
+  store.addAction({householdId:"h1",callId:"cook-note",done:false,card:{id:"from-cook",type:"cart",cart,needsApproval:false}});
+  const pushes: string[] = [];
+  await runDue(new Date(),store,fakeSwiggy().swiggy,async (_token,id,kind) => { pushes.push(id+" "+kind); });
+  assert.deepEqual(pushes,["from-cook ready"]);
 });

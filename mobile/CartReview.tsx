@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { Cart, CartLine, Unit } from "../src/contracts.ts";
 import { CartTracking, type Tracking } from "./OwnerAlerts.tsx";
+import { GroceryReceipt } from "./GroceryReceipt.tsx";
 import { api, postJson, rupees } from "./api.ts";
 
 type ReviewedLine = CartLine & { pack?: { count: number; size: number; unit: Unit }; interpretation?: string };
@@ -92,13 +93,23 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
     await Linking.openURL(url);
   };
 
-  const track = (reviewId?: string) => <CartTracking cartId={cardId} tracking={tracking} reviewId={reviewId} ownerToken={ownerToken} onReload={onReload} />;
-  if (!reviewed || done || purchased) return <View style={s.section}>
-    <Text style={s.title}>Grocery cart</Text>
-    {cart.lines.length ? <PackLines cart={cart} /> : <Text style={s.muted}>All items removed.</Text>}
-    <Text style={s.item}>Item estimate {rupees(cart.total)}</Text>
-    {(done || purchased) && track(cart.reviewId)}
-    {done || purchased ? <Text>Reviewed ✓</Text> : cart.lines.length > 0 && <Button label="Review order" onPress={openReview} />}
+  const providerReceipt = tracking?.receipt?.source === "instamart" ? tracking.receipt : undefined;
+  const manual = !connected || useStoreLinks;
+  const showProvider = !!providerReceipt && !manual;
+  const track = (source?: "instamart" | "manual") => <CartTracking cartId={cardId} tracking={tracking}
+    reviewId={reviewed?.reviewId ?? cart.reviewId} ownerToken={ownerToken} onReload={onReload}
+    source={source} receiptId={source === "instamart" ? providerReceipt?.receiptId : undefined} />;
+  if (purchased) return <View style={s.section}>
+    <GroceryReceipt receipt={tracking?.receipt} state={tracking?.state} />
+    {track()}
+  </View>;
+  if (!reviewed || done) return <View style={s.section}>
+    {showProvider ? <GroceryReceipt receipt={providerReceipt} /> : <>
+      <Text style={s.title}>Grocery cart</Text>
+      {cart.lines.length ? <PackLines cart={cart} /> : <Text style={s.muted}>All items removed.</Text>}
+      <Text style={s.item}>Item estimate {rupees(cart.total)}</Text>
+    </>}
+    {done ? <Text>Reviewed ✓</Text> : cart.lines.length > 0 && <Button label="Review order" onPress={openReview} />}
     {error !== "" && <Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>}
   </View>;
 
@@ -106,7 +117,11 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
     <View style={s.row}><Text accessibilityRole="header" style={s.title}>Review order</Text>
       <Button secondary label="Close" disabled={working} onPress={() => setReviewed(null)} /></View>
     {connected && !useStoreLinks && <Button secondary label="Use store links instead" disabled={locked} onPress={() => setUseStoreLinks(true)} />}
-    {useStoreLinks && <Text style={s.muted}>Buy the items in Instamart, then edit the quantities here to match your purchase before marking them bought.</Text>}
+    {connected && useStoreLinks && <Button secondary label="Back to Instamart review" disabled={locked} onPress={() => setUseStoreLinks(false)} />}
+    {manual && <Text style={s.muted}>{providerReceipt || tracking?.instamartPending
+      ? "Edits here only update your household list. Check your existing Instamart cart before paying."
+      : "Edit this list to match the packs you bought before marking the purchase."}</Text>}
+    {showProvider ? <GroceryReceipt receipt={providerReceipt} /> : <>
     {reviewed.lines.map((line, index) => <View key={index} style={s.line}>
       <PackLine line={line} />
       {editing === index ? <>
@@ -135,14 +150,16 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
     {pending.map((question, i) => <Text key={i} style={s.notice}>Awaiting cook · {question}</Text>)}
     <Text style={s.item}>Item estimate {rupees(reviewed.total)}</Text>
     <Text style={s.muted}>Check your delivery address, ETA, fees and final payable total in Instamart before you pay.</Text>
+    </>}
+    {!manual && tracking?.instamartPending && <Text style={s.notice}>Finish the current Instamart review to confirm the selected packs.</Text>}
     {stale && <>
       <Text accessibilityLiveRegion="polite" style={s.notice}>Your cart changed. Review the updated quantities and estimate.</Text>
       <Button label="See updated order" disabled={working} onPress={openReview} />
     </>}
     {error !== "" && <Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>}
     {!stale && editing === null && reviewed.lines.length > 0 && reviewed.reviewId && <>
-      {track(reviewed.reviewId)}
-      {connected && <Button label="Review with Instamart" disabled={locked} onPress={() => void go(providerReview)} />}
+      {track(manual ? "manual" : showProvider && providerReceipt.receiptId && !tracking?.instamartPending ? "instamart" : undefined)}
+      {!manual && <Button label="Review with Instamart" disabled={locked} onPress={() => void go(providerReview)} />}
       {demo && <View style={s.buttons}>
         <Button label="Demo order now" disabled={locked} onPress={() => onApprove({ order: "now", reviewId: reviewed.reviewId! })} />
         <Button secondary label="Demo tomorrow at 8 AM" disabled={locked} onPress={() => {
