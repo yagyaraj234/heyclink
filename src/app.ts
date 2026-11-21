@@ -19,10 +19,12 @@ export interface AppDeps {
   corsOrigin?: string; // default "*": the API has no cookies or auth
 }
 
-// STT providers sniff format from the file extension.
+// STT providers sniff format from the file extension. The header is client input: anything but a plain token → "bin".
+const EXT: Record<string, string> = { mpeg: "mp3", mp4: "m4a", wave: "wav", "vnd.wave": "wav" };
 const extFor = (contentType = "") => {
-  const sub = contentType.split(";")[0]!.split("/")[1]?.trim().replace(/^x-/, "") ?? "bin";
-  return ({ mpeg: "mp3", mp4: "m4a" } as Record<string, string>)[sub] ?? sub;
+  const sub = contentType.split(";")[0]!.split("/")[1]?.trim().toLowerCase().replace(/^x-/, "") ?? "";
+  const ext = EXT[sub] ?? sub;
+  return /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 };
 
 export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) {
