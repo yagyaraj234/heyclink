@@ -15,11 +15,18 @@ const { values: n } = parseArgs({
 });
 
 const HF = "https://huggingface.co/datasets";
-const list = (urls: string[]) => `[${urls.map((u) => `'${u}'`).join(",")}]`;
-const hiFiles = list(Array.from({ length: 10 }, (_, i) => `${HF}/SPRINGLab/IndicVoices-R_Hindi/resolve/main/data/train-0000${i}-of-00010.parquet`));
-// ponytail: only telugu_train/split1-* (4 of 71 shards); widen if 20 clips aren't found.
-const teApi = (await (await fetch("https://huggingface.co/api/datasets/eswardivi/IndicVoices", process.env.HF_TOKEN ? { headers: { authorization: `Bearer ${process.env.HF_TOKEN}` } } : {})).json()) as { siblings: { rfilename: string }[] };
-const teFiles = list(teApi.siblings.map((s) => s.rfilename).filter((f) => f.startsWith("telugu_train/split1-")).map((f) => `${HF}/eswardivi/IndicVoices/resolve/main/${f}`));
+const auth: RequestInit = process.env.HF_TOKEN ? { headers: { authorization: `Bearer ${process.env.HF_TOKEN}` } } : {};
+// HF rate-limits hits on /resolve/ (anonymous: 3000 per 5 min) and every DuckDB range read goes through it.
+// Resolve each shard's redirect once and hand DuckDB the signed CDN URL, which isn't counted (valid ~1h). `*` in the signature is escaped because DuckDB reads it as a glob.
+async function cdn(u: string): Promise<string> {
+  const r = await fetch(u, { ...auth, method: "HEAD", redirect: "manual" });
+  if (r.status === 429) throw new Error(`HF rate limit; retry in ${r.headers.get("retry-after")}s or set HF_TOKEN`);
+  return r.headers.get("location") ?? u;
+}
+const list = async (urls: string[]) => `[${(await Promise.all(urls.map(cdn))).map((u) => `'${u.replaceAll("*", "%2A").replaceAll("'", "''")}'`).join(",")}]`;
+const hiFiles = await list(Array.from({ length: 10 }, (_, i) => `${HF}/SPRINGLab/IndicVoices-R_Hindi/resolve/main/data/train-0000${i}-of-00010.parquet`));
+const teApi = (await (await fetch("https://huggingface.co/api/datasets/eswardivi/IndicVoices", auth)).json()) as { siblings: { rfilename: string }[] };
+const teFiles = await list(teApi.siblings.map((s) => s.rfilename).filter((f) => f.startsWith("telugu_train/") && f.endsWith(".parquet")).map((f) => `${HF}/eswardivi/IndicVoices/resolve/main/${f}`));
 
 // Unit words only: bare fractions (आधा, पाव) also match inside other words (आधार, पावडर).
 const HI_QTY = "किलो|ग्राम|लीटर|पैकेट|दर्जन|गड्डी";
@@ -43,13 +50,15 @@ for (const j of jobs) {
   if (j.limit <= 0) continue;
   // No ORDER BY: preserve_insertion_order keeps file order, so LIMIT is deterministic and stops scanning early.
   const res = await con.runAndReadAll(
-    `SELECT text, ${j.dur}::DOUBLE AS dur, audio.path AS key, audio.bytes AS bytes FROM read_parquet(${j.files})
+    `SELECT text, ${j.dur}::DOUBLE AS dur, audio.bytes AS bytes FROM read_parquet(${j.files})
      WHERE task_name = '${j.task}' AND regexp_matches(text, '${j.re}') LIMIT ${j.limit}`,
   );
   for (const r of res.getRowObjects()) {
     const bytes = Buffer.from((r.bytes as { bytes: Uint8Array }).bytes);
     const ext = bytes.subarray(0, 4).toString("latin1") === "RIFF" ? "wav" : bytes.subarray(0, 4).toString("latin1") === "fLaC" ? "flac" : "bin";
-    const id = `iv-${j.tag}-${createHash("sha1").update(String(r.key)).digest("hex").slice(0, 8)}`;
+    // audio.path repeats across shards, so the id hashes the audio itself; identical clips are kept once.
+    const id = `iv-${j.tag}-${createHash("sha1").update(bytes).digest("hex").slice(0, 8)}`;
+    if (manifest.some((m) => m.id === id)) continue;
     const audioPath = `${DATA_DIR}/audio/${id}.${ext}`;
     writeFileSync(audioPath, bytes);
     manifest.push({ id, lang: j.lang, task: j.task, source: j.source, text: String(r.text), durationS: Number(r.dur), audioPath });
