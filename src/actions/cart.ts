@@ -61,7 +61,7 @@ function packLimit(entry: CatalogEntry): number {
   return 3;
 }
 
-export function priceCart(lines: RequestedLine[], household: Pick<Household, "brands">) {
+export function priceCart(lines: RequestedLine[], household: Pick<Household, "brands">, source: "cook" | "owner" = "cook") {
   const cartLines: ReviewedLine[] = [];
   const held: HeldLine[] = [];
   const used = new Map<string, { packs: number; grams: number }>();
@@ -72,14 +72,15 @@ export function priceCart(lines: RequestedLine[], household: Pick<Household, "br
       held.push({ ...problem, reason: "Item or quantity needs clarification." });
       continue;
     }
-    const corrected = l.qty === 500 && l.unit === "kg" && grams(entry.packSize, entry.unit) > 0;
+    const corrected = source === "cook" && l.qty === 500 && l.unit === "kg" && grams(entry.packSize, entry.unit) > 0;
     const unit = corrected ? "g" : l.unit;
     const interpretation = corrected ? "Interpreted 500 kg as 500 g." : l.interpretation;
     const measured = SCALE[unit]?.[0] === "m";
     const converts = unit === "packet" || unit === entry.unit ||
       (SCALE[unit] && SCALE[unit]?.[0] === SCALE[entry.unit]?.[0]) ||
       (grams(l.qty, unit) > 0 && entry.unit === "bunch");
-    if (!converts || (!measured && !Number.isInteger(l.qty))) {
+    const pieces = unit === "dozen" ? l.qty * 12 : l.qty;
+    if (!converts || (!measured && !Number.isInteger(pieces))) {
       held.push({ ...problem, reason: `Check the pack size for ${entry.name}.`, suggestion: { qty: entry.packSize, unit: entry.unit } });
       continue;
     }
@@ -113,6 +114,19 @@ export const reviewOf = (cart: Cart) => cart as Cart & Partial<Pick<ReviewedCart
 
 export const requestsFromCart = (cart: Cart): RequestedLine[] =>
   cart.lines.map(l => ({ ...l, raw: l.item, confidence: 1 }));
+
+/** Sum one receipt in its first line's unit. An unknown conversion cannot establish how much was bought. */
+export function purchasedQuantity(lines: Pick<GroceryLine, "qty" | "unit">[]) {
+  const first = lines[0];
+  if (!first) return;
+  const baseUnits: Partial<Record<Unit, Unit>> = { kg: "g", l: "ml", dozen: "piece" };
+  let qty = 0;
+  for (const line of lines) {
+    if ((baseUnits[line.unit] ?? line.unit) !== (baseUnits[first.unit] ?? first.unit) || !Number.isFinite(line.qty) || line.qty <= 0) return;
+    qty += line.qty * (SCALE[line.unit]?.[1] ?? 1);
+  }
+  return { qty: qty / (SCALE[first.unit]?.[1] ?? 1), unit: first.unit };
+}
 
 /** Validate the stored quantities and prices again before approving or placing old SQLite carts. */
 export function matchesHouseholdBill(cart: Cart): boolean {

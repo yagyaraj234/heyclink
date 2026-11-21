@@ -5,7 +5,7 @@ import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveBrand, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
 import type { Ambiguous, ExtractionWithAmbiguous, RecentCall } from "../actions/plan.ts";
-import { catalog } from "../actions/cart.ts";
+import { catalog, purchasedQuantity } from "../actions/cart.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
 import { planMeals, weekday } from "./meals.ts";
 
@@ -212,7 +212,8 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
         interpretation: "Spoken quantity unclear. Confirm one retail pack." };
     }
     if (!source.quantityOmitted || source.qtyPhrase.trim()) return line;
-    const previous = household.history.flatMap(order => order.lines).findLast(bought => bought.item === line.item);
+    const receipt = household.history.findLast(order => order.lines.some(bought => bought.item === line.item));
+    const previous = purchasedQuantity(receipt?.lines.filter(bought => bought.item === line.item) ?? []);
     if (previous && previous.qty > 0 &&
         !(previous.unit === "kg" && previous.qty > 2) && !(previous.unit === "g" && previous.qty > 2000)) {
       return { ...line, qty: previous.qty, unit: previous.unit, interpretation: "Quantity unspecified. Suggested the last household purchase." };
@@ -225,7 +226,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     groceries: lines.filter((l): l is GroceryLine => l !== undefined && !("candidates" in l)),
     notes: out.notes,
   };
-  if (out.neededBy && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})$/.test(out.neededBy)) {
+  if (out.neededBy && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(out.neededBy)) {
     const deadline = Date.parse(out.neededBy);
     if (deadline > now.getTime()) extraction.neededBy = new Date(deadline).toISOString();
   }

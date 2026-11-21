@@ -563,12 +563,18 @@ test('processCall reuses the last household purchase when a quantity is omitted'
   assert.deepEqual(result.extraction.groceries.map(l => [l.qty, l.unit]), [[1.5, 'kg'], [1, 'bunch']]);
 });
 
-test('processCall schedules an explicit grocery deadline in household local time', async () => {
-  const {stt} = fakeStt('pyaaz shaam chhe baje tak chahiye', 'hi');
-  const {llm} = fakeLlm({ groceries:[{raw:'pyaaz',item:'onion',itemWord:'pyaaz',qtyPhrase:'',qty:1,unit:'packet',confidence:1}],
-    neededBy:'2026-11-21T18:00:00+05:30',notes:[] });
-  const result = await processCall({audioPath:'note',householdId:h.id}, h, {stt,llm}, {now:new Date('2026-11-21T10:00:00Z')});
-  assert.equal((result.extraction as {neededBy?:string}).neededBy, '2026-11-21T12:30:00.000Z');
+test("processCall accepts zoned grocery deadlines with minute, second, or fractional precision", async () => {
+  const { stt } = fakeStt("pyaaz shaam chhe baje tak chahiye", "hi");
+  for (const [neededBy, expected] of [
+    ["2026-11-21T18:00:00+05:30", "2026-11-21T12:30:00.000Z"],
+    ["2026-11-21T18:00+05:30", "2026-11-21T12:30:00.000Z"],
+    ["2026-11-21T18:00:00.125+05:30", "2026-11-21T12:30:00.125Z"],
+    ["2026-11-21T18:00", undefined],
+  ] as const) {
+    const { llm } = fakeLlm({ groceries: [], neededBy, notes: [] });
+    const result = await processCall({ audioPath: "note", householdId: h.id }, h, { stt, llm }, { now: new Date("2026-11-21T10:00:00Z") });
+    assert.equal(result.extraction.neededBy, expected, neededBy);
+  }
 });
 
 test('processCall asks the cook about an unclear quantity even when item recognition is confident', async () => {
@@ -578,4 +584,18 @@ test('processCall asks the cook about an unclear quantity even when item recogni
   const result = await processCall({audioPath:'note',householdId:h.id}, h, {stt,llm});
   assert.deepEqual(result.actions.map(c => c.type), ['question']);
   assert.deepEqual(result.extraction.groceries.map(l=>[l.qty,l.unit]), [[500,'g']]);
+});
+
+test("processCall totals compatible lines on the latest receipt for an omitted quantity", async () => {
+  const { stt } = fakeStt("onions", "en");
+  const { llm } = fakeLlm({ groceries: [{
+    item: "onion", itemWord: "onion", raw: "onions", qtyPhrase: "", quantityOmitted: true, qty: 1, unit: "packet", confidence: 1,
+  }], notes: [] });
+  const household: Household = { ...h, history: [
+    { at: "2026-11-17", lines: [{ item: "onion", qty: 2, unit: "kg" }] },
+    { at: "2026-11-18", lines: [{ item: "onion", qty: 500, unit: "g" }, { item: "onion", qty: 0.5, unit: "kg" }] },
+    { at: "2026-11-19", lines: [{ item: "coriander", qty: 1, unit: "bunch" }] },
+  ] };
+  const result = await processCall({ audioPath: "note", householdId: h.id }, household, { stt, llm });
+  assert.deepEqual(result.extraction.groceries.map(l => [l.qty, l.unit]), [[1000, "g"]]);
 });
