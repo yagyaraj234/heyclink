@@ -1,8 +1,8 @@
 // Score every real clip for each STT provider × {plain, harness}; write eval/out/results.{json,md}.
-//   node --env-file-if-exists=.env eval/run.ts [--provider openai] [--mode harness] [--set recorded] [--limit 5] [--fresh] [--gold eval/data/indicvoices/drafts]
+//   node --env-file-if-exists=.env eval/run.ts [--provider openai] [--mode harness] [--set recorded] [--lang hi] [--limit 5] [--fresh | --cached-only] [--gold eval/data/indicvoices/drafts]
 // STT results are cached in eval/out/stt-cache/ (with their measured sttMs) so re-runs only pay for extraction; --fresh ignores the cache.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import type { CallResult, Extraction, Household, Stt, Transcript } from "../src/contracts.ts";
 import { IV_DIR, RECORDED_AUDIO_DIR, readCases, readJson, type Case, type ClipMeta } from "./dataset.ts";
@@ -14,14 +14,22 @@ const { values: args } = parseArgs({
     provider: { type: "string", multiple: true },
     mode: { type: "string", multiple: true },
     set: { type: "string", multiple: true },
+    lang: { type: "string", multiple: true },
     limit: { type: "string" },
     fresh: { type: "boolean", default: false },
+    "cached-only": { type: "boolean", default: false }, // a cache miss is an error row, never an STT call
     gold: { type: "string", default: "eval/gold/indicvoices" }, // IndicVoices gold dir; anything else is reported as provisional
   },
 });
 
 // whisper-cpp spawns whisper-cli per call (model reload each time), so its sttMs includes load time; see the adapter.
-const PROVIDERS: Record<string, () => Stt> = { openai: openaiStt, sarvam: sarvamStt, "whisper-cpp": () => whisperCppStt() };
+// oracle "transcribes" to the human transcript: the extraction ceiling, with STT errors taken out. Never cached.
+const PROVIDERS: Record<string, () => Stt> = {
+  openai: openaiStt,
+  sarvam: sarvamStt,
+  "whisper-cpp": () => whisperCppStt(),
+  oracle: () => ({ transcribe: async (p) => ({ text: clips.find((c) => c.audioPath === p)!.transcript, lang: clips.find((c) => c.audioPath === p)!.lang, provider: "fake" }) }),
+};
 const MODES = ["plain", "harness"] as const;
 const OUT = "eval/out";
 const CACHE = `${OUT}/stt-cache`;
@@ -57,7 +65,7 @@ function loadClips(): { clips: Clip[]; missingAudio: string[] } {
   });
   // Headline numbers are real speech only: synthetic/TTS clips never enter this run.
   const clips = [...recorded, ...iv].filter((c) => !/synthetic|tts/i.test(c.source));
-  return { clips: args.set ? clips.filter((c) => args.set!.includes(c.set)) : clips, missingAudio };
+  return { clips: clips.filter((c) => (!args.set || args.set.includes(c.set)) && (!args.lang || args.lang.includes(c.lang))), missingAudio };
 }
 
 /** Wraps an Stt with a disk cache; a hit replays the transcript and the sttMs measured when it was fetched. */
@@ -70,6 +78,7 @@ function cachedStt(inner: Stt, key: (audioPath: string) => string, hits: Map<str
         hits.set(audioPath, c.sttMs);
         return c.transcript;
       }
+      if (args["cached-only"]) throw new Error("not in STT cache (--cached-only)");
       const t0 = performance.now();
       const transcript = await inner.transcribe(audioPath, opts);
       mkdirSync(p.slice(0, p.lastIndexOf("/")), { recursive: true });
@@ -122,7 +131,7 @@ for (const provider of Object.keys(PROVIDERS).filter((p) => !args.provider || ar
   for (const mode of MODES.filter((m) => !args.mode || args.mode.includes(m))) {
     const hits = new Map<string, number>();
     const byPath = new Map(clips.map((c) => [c.audioPath, c.id]));
-    const stt = cachedStt(PROVIDERS[provider]!(), (p) => `${provider}/${mode}/${byPath.get(p)}`, hits);
+    const stt = provider === "oracle" ? PROVIDERS.oracle!() : cachedStt(PROVIDERS[provider]!(), (p) => `${provider}/${mode}/${byPath.get(p)}`, hits);
     for (const c of clips) {
       const base = { id: c.id, set: c.set, lang: c.lang, provider, mode };
       try {
@@ -195,7 +204,9 @@ const worst = [...Map.groupBy(results, (r) => r.id).entries()]
   .slice(0, 10);
 
 const provisional = args.gold !== "eval/gold/indicvoices";
-const md = `# ${provisional ? `PROVISIONAL: draft labels, n=${clips.length}` : "Eval results"}
+// The gold README says who reviewed the labels (`reviewer: agent` until a human has checked them).
+const agentGold = !provisional && /^reviewer: agent/m.test(existsSync(`${args.gold}/README.md`) ? readFileSync(`${args.gold}/README.md`, "utf8") : "");
+const md = `# ${provisional ? `PROVISIONAL: draft labels, n=${clips.length}` : agentGold ? `Eval results: agent-reviewed labels, not yet human-checked, n=${clips.length}` : "Eval results"}
 
 Generated ${new Date().toISOString()}. Real speech only (self-recorded cook notes + IndicVoices); no synthetic clips.
 ${provisional ? `
@@ -206,6 +217,7 @@ ${provisional ? `
 - **item F1**: right item, any qty/unit. **qty+unit F1**: item + qty + unit match (g↔kg, ml↔l normalized), R / P in brackets. Micro-averaged over lines.
 - **brand**: over gold lines that name a brand. **advance**: F1 over clips with an advance, then gold advances and invented (FP) advances.
 - **WER**: corpus WER over clips whose reference and hypothesis share a script (n in brackets).
+- **oracle** feeds the human transcript to extraction instead of STT output: the extraction ceiling. Its stt ms is ~0, so its total is extraction + plan only.
 - Latency is p50 / p95 / p99 in ms. Total = audio in → actions ready (\`timings.totalMs\`). whisper-cpp stt includes a per-call model reload.
 
 | provider | mode | set | lang | clips (err) | item F1 | qty+unit F1 (R / P) | brand | advance F1 (gold, FP) | WER | total ms | stt ms | extract ms | plan ms |
