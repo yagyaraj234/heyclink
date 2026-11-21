@@ -7,11 +7,12 @@ import { join } from "node:path";
 import { LANGS } from "./contracts.ts";
 import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
+import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 
 /** Lane 1's processCall (src/pipeline/process.ts) satisfies this; tests inject it with fake ports. */
 export type ProcessCall = (
-  input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options?: { harness?: boolean },
+  input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options?: { harness?: boolean; recent?: RecentCall[] },
 ) => Promise<CallResult>;
 
 export interface AppDeps {
@@ -36,8 +37,10 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
   const calls = new Map<string, CallResult>();
   const callHousehold = new Map<string, string>(); // callId → householdId; CallResult doesn't carry it
-  // done = approved (cart/advance) or answered (question). lines = what the cart is built from; line = the question's line.
-  type Entry = { card: ActionCard; callId: string; householdId: string; done: boolean; lines?: GroceryLine[]; line?: GroceryLine };
+  const callAt = new Map<string, string>(); // callId → ISO time it was stored
+  // done = approved (cart/advance) or answered (question). lines = what the cart is built from.
+  // choices = per question option, the line it adds to the cart (null = adds nothing).
+  type Entry = { card: ActionCard; callId: string; householdId: string; done: boolean; lines?: GroceryLine[]; choices?: (GroceryLine | null)[] };
   const actions = new Map<string, Entry>();
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const withStatus = (call: CallResult) => ({
@@ -71,7 +74,16 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     // mode=plain: the base model (no household context, STT keywords or indic pass) for side-by-side demos.
     const mode = req.query.mode ?? "harness";
     if (mode !== "harness" && mode !== "plain") return void res.status(400).json({ error: "mode must be harness or plain" });
-    const options = { harness: mode === "harness" };
+    const RECENT = 5;
+    // harness only: the household's last calls, oldest → newest, so "woh wala" can refer back to them
+    const options = mode !== "harness" ? { harness: false } : {
+      harness: true,
+      recent: [...calls.values()].filter((c) => callHousehold.get(c.callId) === householdId).slice(-RECENT).map((c): RecentCall => ({
+        at: callAt.get(c.callId)!,
+        transcript: c.transcript.text,
+        lines: c.extraction.groceries.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
+      })),
+    };
     // Plain also forgets household memory, so its cart gets no remembered brands. Cook, UPI and approval limit stay.
     const ctx: Household = options.harness ? household
       : { ...household, brands: {}, pantry: {}, history: [], family: { ...household.family, dietRules: [] } };
@@ -100,13 +112,21 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
 
     calls.set(result.callId, result);
     callHousehold.set(result.callId, householdId);
+    callAt.set(result.callId, new Date().toISOString());
     const { callId, extraction } = result;
-    const unsure = extraction.groceries.filter(isUnsure); // question cards follow unsure-line order (planActions)
+    // question cards: unsure lines ("Yes, add it" | "No, skip"), then ambiguous words (candidates… | Skip); see planActions
+    const choices: (GroceryLine | null)[][] = [
+      ...extraction.groceries.filter(isUnsure).map((l) => [l, null]),
+      ...((extraction as ExtractionWithAmbiguous).ambiguous ?? []).map(({ raw, qty, unit, candidates }) => [
+        ...candidates.map((item) => ({ raw, item, qty, unit, confidence: 1 })),
+        null,
+      ]),
+    ];
     let q = 0;
     for (const card of result.actions) {
       const entry: Entry = { card, callId, householdId, done: false };
       if (card.type === "cart") entry.lines = extraction.groceries.filter((l) => !isUnsure(l));
-      if (card.type === "question") entry.line = unsure[q++];
+      if (card.type === "question") entry.choices = choices[q++];
       actions.set(card.id, entry);
     }
     res.status(201).json(withStatus(result));
@@ -143,14 +163,15 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   app.post("/actions/:id/answer", async (req, res) => {
     const entry = actions.get(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
-    const { card, line } = entry;
-    if (card.type !== "question" || !line) return void res.status(400).json({ error: "only questions can be answered" });
+    const { card, choices } = entry;
+    if (card.type !== "question" || !choices) return void res.status(400).json({ error: "only questions can be answered" });
     if (entry.done) return void res.status(409).json({ error: "already answered" });
     const option: unknown = req.body?.option;
     if (typeof option !== "string" || !card.options.includes(option)) {
       return void res.status(400).json({ error: `option must be one of ${JSON.stringify(card.options)}` });
     }
-    if (option !== card.options[0]) {
+    const line = choices[card.options.indexOf(option)];
+    if (!line) {
       entry.done = true;
       return void res.json({ status: "answered" });
     }
@@ -186,6 +207,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       if (hid !== id) continue;
       calls.delete(callId);
       callHousehold.delete(callId);
+      callAt.delete(callId);
     }
     for (const [actionId, e] of actions) if (e.householdId === id) actions.delete(actionId);
     res.json({ status: "reset" });

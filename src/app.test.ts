@@ -4,9 +4,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import type { CallResult, Extraction, Household, Llm, Stt } from "./contracts.ts";
+import type { ActionCard, CallResult, Extraction, Household, Llm, Stt } from "./contracts.ts";
 import case01 from "../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import { createApp } from "./app.ts";
+import type { ProcessCall } from "./app.ts";
+import { planActions } from "./actions/plan.ts";
+import type { Ambiguous } from "./actions/plan.ts";
 import { processCall } from "./pipeline/process.ts";
 
 // Fakes only for the Stt/Llm ports. The Llm replies in the pipeline's extraction-schema shape.
@@ -340,4 +343,82 @@ test("POST /calls?mode=plain runs the base model without household context and s
   assert.ok(hCart.type === "cart");
   assert.deepEqual(hCart.cart.lines.map((l) => [l.brand, l.price]), [["aashirvaad", 132]]);
   assert.equal((await post("/calls?mode=bogus", { transcript: "atta", householdId: "h1" })).status, 400);
+});
+
+// Stand-in for lane 1's pending PR: the real processCall, plus extraction.ambiguous and options.recent in the LLM
+// context. Delete it once lane 1 lands and pass processCall; the assertions below stay as they are.
+const pendingProcessCall = (ambiguous: Ambiguous[] = []): ProcessCall => async (input, household, ports, options = {}) => {
+  const recent = options.recent ? `Recent calls: ${JSON.stringify(options.recent)}\n` : "";
+  const llm: Llm = { json: (req) => ports.llm.json({ ...req, user: recent + req.user }) };
+  const r = await processCall(input, household, { stt: ports.stt, llm }, options);
+  const extraction = { ...r.extraction, ambiguous };
+  return { ...r, extraction, actions: await planActions(extraction, household) };
+};
+
+test("a fuzzy word becomes a which-one question; the chosen item joins the cart, Skip adds nothing", async (t) => {
+  const llm = llmReplying({ groceries: [{ raw: "do kilo atta", item: "atta", qty: 2, unit: "kg", confidence: 1 }], notes: [] });
+  const ambiguous: Ambiguous[] = [
+    { raw: "चना", qty: 1, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] },
+    { raw: "dal", qty: 500, unit: "g", candidates: ["toor-dal", "moong-dal"] },
+  ];
+  const server = createApp({ processCall: pendingProcessCall(ambiguous), stt: fakeStt(), llm }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown) =>
+    fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  const call = (await (await post("/calls", { transcript: "do kilo atta aur ek kilo चना, aadha kilo dal", householdId: "h1" })).json()) as CallResult;
+  const [cartCard, chanaQ, dalQ] = call.actions;
+  assert.ok(chanaQ?.type === "question" && dalQ?.type === "question");
+  assert.deepEqual(chanaQ.options, ["Kabuli Chana", "Kala Chana", "Skip"]);
+
+  const kala = (await (await post(`/actions/${chanaQ.id}/answer`, { option: "Kala Chana" })).json()) as { status: string; cart: ActionCard };
+  assert.equal(kala.status, "answered");
+  assert.equal(kala.cart.id, cartCard!.id);
+  assert.deepEqual(await (await post(`/actions/${dalQ.id}/answer`, { option: "Skip" })).json(), { status: "answered" });
+  assert.equal((await post(`/actions/${dalQ.id}/answer`, { option: "Toor Dal" })).status, 409);
+
+  const after = (await (await fetch(`${base}/calls/${call.callId}`)).json()) as CallResult;
+  const cart = after.actions[0]!;
+  assert.ok(cart.type === "cart");
+  // atta 2 kg aashirvaad 2 × 66 = 132; kala-chana 1 kg in 500 g packs 2 × 55 = 110 (no household brand)
+  assert.deepEqual(cart.cart.lines.map((l) => [l.item, l.qty, l.unit, l.brand, l.price]), [
+    ["atta", 2, "kg", "aashirvaad", 132],
+    ["kala-chana", 1, "kg", undefined, 110],
+  ]);
+  assert.equal(cart.cart.total, 242);
+});
+
+test("POST /calls hands processCall the household's last 5 calls as recent context; plain mode gets none", async (t) => {
+  const prompts: string[] = [];
+  const seen: unknown[] = [];
+  const reply = llmReplying({ groceries: [{ raw: "do kilo atta", item: "atta", qty: 2, unit: "kg", confidence: 1 }], notes: [] });
+  const llm: Llm = { json: async (req) => (prompts.push(req.user), reply.json(req)) };
+  const pending = pendingProcessCall();
+  const tracking: ProcessCall = (input, household, ports, options) => (seen.push(options?.recent), pending(input, household, ports, options));
+  const server = createApp({ processCall: tracking, stt: fakeStt(), llm }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const say = (transcript: string, mode = "harness") =>
+    fetch(`${base}/calls?mode=${mode}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transcript, householdId: "h1" }) });
+
+  await say("pehli baar: do kilo atta");
+  await say("doosri baar: woh wala chana bhi");
+  assert.deepEqual(seen[0], []);
+  const [first] = seen[1] as { at: string }[];
+  assert.match(first!.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+  assert.deepEqual(seen[1], [{ at: first!.at, transcript: "pehli baar: do kilo atta", lines: [{ item: "atta", qty: 2, unit: "kg" }] }]);
+  assert.match(prompts[1]!, /pehli baar: do kilo atta/); // the second call's LLM sees the first call
+
+  await say("plain: kuch bhi", "plain");
+  assert.equal(seen[2], undefined);
+  assert.doesNotMatch(prompts[2]!, /pehli baar/);
+
+  for (const n of [3, 4, 5, 6]) await say(`call ${n}`);
+  await say("call 7");
+  // stored calls oldest → newest; the plain call was never stored
+  assert.deepEqual((seen.at(-1) as { transcript: string }[]).map((r) => r.transcript),
+    ["doosri baar: woh wala chana bhi", "call 3", "call 4", "call 5", "call 6"]);
 });
