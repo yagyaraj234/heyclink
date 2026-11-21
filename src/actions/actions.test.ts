@@ -115,3 +115,20 @@ test("buildCart search links drop the catalog's bracketed gloss: 'Jeera (Cumin S
     "https://www.swiggy.com/instamart/search?query=bhindi",
   ]);
 });
+
+test("planActions asks which item a fuzzy word meant, with catalog names plus Skip", async () => {
+  // extraction.ambiguous is lane 1's pending field, typed locally in plan.ts until it lands
+  const extraction: Extraction & { ambiguous: { raw: string; qty: number; unit: "kg" | "g"; candidates: string[] }[] } = {
+    groceries: [],
+    notes: [],
+    ambiguous: [
+      { raw: "चना", qty: 1, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] },
+      { raw: "dal", qty: 500, unit: "g", candidates: ["toor-dal", "moong-dal"] },
+    ],
+  };
+  const cards = await planActions(extraction, household());
+  assert.deepEqual(cards.map((c) => c.type === "question" && [c.text, c.options]), [
+    ['Which one did Lakshmi mean by "चना"? (1 kg)', ["Kabuli Chana", "Kala Chana", "Skip"]],
+    ['Which one did Lakshmi mean by "dal"? (500 g)', ["Toor Dal", "Moong Dal", "Skip"]],
+  ]);
+});
