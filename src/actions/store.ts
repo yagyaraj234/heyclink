@@ -60,6 +60,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS owner_keys (household text PRIMARY KEY, hash text NOT NULL);
   CREATE TABLE IF NOT EXISTS instamart_prepared (cart text PRIMARY KEY, revision text NOT NULL, intent text, receipt text, read_token text, review_revision text);
   CREATE TABLE IF NOT EXISTS instamart_links (household text PRIMARY KEY, sealed text NOT NULL);
+  CREATE TABLE IF NOT EXISTS instamart_state (id text PRIMARY KEY, value text NOT NULL, until bigint NOT NULL);
   CREATE TABLE IF NOT EXISTS calls (seq bigint GENERATED ALWAYS AS IDENTITY, id text PRIMARY KEY, household text NOT NULL, at text NOT NULL, data text NOT NULL);
   CREATE TABLE IF NOT EXISTS actions (seq bigint GENERATED ALWAYS AS IDENTITY, id text PRIMARY KEY, household text NOT NULL, call text, pos integer NOT NULL, data text NOT NULL);
   CREATE TABLE IF NOT EXISTS usage_samples (
@@ -159,6 +160,20 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
       (await q<{sealed: string}>("SELECT sealed FROM instamart_links WHERE household = $1", id)).rows[0]?.sealed,
     saveInstamartLink: async (id: string, sealed: string) =>
       void await q("INSERT INTO instamart_links VALUES ($1, $2) ON CONFLICT (household) DO UPDATE SET sealed = excluded.sealed", id, sealed),
+    // Instamart OAuth tickets, sessions and leases, shared by every instance. A row past `until` (epoch ms) is gone.
+    instamartState: async (id: string) =>
+      (await q<{value: string}>("SELECT value FROM instamart_state WHERE id = $1 AND until > $2", id, Date.now())).rows[0]?.value,
+    saveInstamartState: async (id: string, value: string, until: number) =>
+      void await q("INSERT INTO instamart_state VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET value = excluded.value, until = excluded.until", id, value, until),
+    /** false while another live row holds id. */
+    claimInstamartState: async (id: string, value: string, until: number) =>
+      (await q("INSERT INTO instamart_state VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET value = excluded.value, until = excluded.until WHERE instamart_state.until <= $4",
+        id, value, until, Date.now())).rowCount === 1,
+    /** Deletes the row and returns its live value, so only one taker on any instance gets it. Also clears expired rows. */
+    takeInstamartState: async (id: string) => {
+      await q("DELETE FROM instamart_state WHERE until <= $1", Date.now());
+      return (await q<{value: string}>("DELETE FROM instamart_state WHERE id = $1 RETURNING value", id)).rows[0]?.value;
+    },
     // Keep the claim after an upstream timeout: a repeat could add the same packs twice.
     claimInstamart: async (cart: string, revision: string, intent?: InstamartIntent) =>
       (await q("INSERT INTO instamart_prepared (cart, revision, intent) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",

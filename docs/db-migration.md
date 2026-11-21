@@ -30,12 +30,13 @@ There was no deployment and there were no customers, so this was a replacement, 
 | Concurrent writers | `finishOrder`, `confirmPurchase` and `confirmOrder` run in a transaction that locks the action and household rows. |
 | Read, modify, write in `app.ts` routes | `/review`, `/tracking`, `/approve` and `/answer` run inside `store.tx`, holding the card's row lock, then its cart's, then the household's. An edit on another instance waits instead of overwriting. STT and checkout run outside the transaction, so the order claim commits before Swiggy is called. Test: two instances answer 8 meal plans at once, and each answer is counted once. |
 | An instance dies mid-checkout | `placing` holds the claim time. Every `runDue` fails claims older than 10 minutes, so a checkout still running on another instance is left alone. The order is never retried, because the attempt may have reached Swiggy. |
+| Instamart OAuth steps landing on different instances | Tickets, sessions, the per-household update lease and the registered `client_id` live in `instamart_state`. A row's id is a sha256 of the browser secret and its payload is sealed with a key derived from that secret, so the database alone can't read a session or unlock a credential. Each instance caches its live provider connection and reconnects from the session's token when a request lands somewhere new. Tickets are taken with `DELETE ... RETURNING`, so a link opens once. Test: open on B, callback on A, addresses on B, packs on A, prepare on B; one registration. |
 | Alert delivery on every instance | The lease is a conditional `UPDATE ... WHERE due <= now`, so only one instance sends each alert. |
 | Dropped idle connections (Neon) | `pool.on("error")` logs instead of crashing. The connect timeout is 15 s to cover a free-tier cold start. |
 
 ## Not done, and why
 
-- **Instamart OAuth tickets and sessions stay in memory** (`src/actions/instamart.ts`). A callback that lands on a different instance fails. Instamart is staging-only. Move them to tables before running more than one instance with Instamart on.
+- **Two tabs of one Instamart session write last-wins.** Each request saves the whole session row. Only the same browser cookie can race itself, and the worst case is a stale CSRF token that asks for a reload.
 - **Optimistic `version` on households and retry with 409.** Not needed: every path that writes a household or a card holds its row lock.
 
 ## Neon free tier

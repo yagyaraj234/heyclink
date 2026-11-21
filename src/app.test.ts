@@ -1158,6 +1158,63 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   assert.equal((await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } })).status, 409);
 });
 
+test("an Instamart review can hop between two server instances on one database", async (t) => {
+  let registered = 0;
+  let cartItems: object[] = [];
+  const onion = { spinId: "spin-o", skuId: "sku-o", itemName: "Onion", itemVariant: "500 g", quantity: 1, discountedFinalPrice: 22, isInStockAndAvailable: true };
+  const invoice = () => ({ items: cartItems, cartTotalAmount: "₹32", selectedAddressDetails: { id: "home", address: "House 7" },
+    billBreakdown: { lineItems: [{ label: "Delivery fee", value: "₹10" }], toPay: { value: "₹32" } } });
+  const network: typeof fetch = async (url, init) => {
+    const msg = JSON.parse(String(init?.body));
+    if (String(url).endsWith("/auth/register")) return Response.json({ client_id: "registered-" + ++registered });
+    if (String(url).endsWith("/auth/token")) {
+      assert.equal(msg.client_id, "registered-1");
+      assert.match(msg.code_verifier, /^[\w-]{43}$/);
+      return Response.json({ access_token: "hop-session", expires_in: 3600 });
+    }
+    const rpc = (result: unknown) => Response.json({ jsonrpc: "2.0", id: msg.id, result });
+    if (msg.method === "initialize") return rpc({ protocolVersion: "2025-03-26" });
+    if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const ok = (data: unknown) => rpc({ structuredContent: { success: true, data } });
+    switch (msg.params.name) {
+      case "get_addresses": return ok({ addresses: [{ id: "home", addressLine: "House 7" }], pagination: { hasMore: false } });
+      case "get_cart": return ok(invoice());
+      case "search_products": return ok({ products: [{ displayName: "Onion", inStock: true, isAvail: true, variations: [
+        { skuId: "sku-o", spinId: "spin-o", displayName: "Fresh onion", quantityDescription: "500 g", isInStockAndAvailable: true, price: { offerPrice: 22 } }] }] });
+      case "update_cart": cartItems = [onion]; return ok(invoice());
+      default: throw Error("unexpected Swiggy tool " + msg.params.name);
+    }
+  };
+  const store = await openStore();
+  const deps = (s: typeof store) => ({ store: s, instamart: { origin: "https://kitchen.example", network },
+    llm: llmReplying({ groceries: [{ item: "onion", raw: "one packet onion", qty: 1, unit: "packet", confidence: 1 }], notes: [] }) });
+  const a = await serve(undefined, deps(store));
+  const b = await serve(undefined, deps(await openStore({ schema: store.schema })));
+  t.after(a.close);
+  t.after(b.close);
+  const owner = await (await a.post("/households", signup)).json();
+  const call = (await (await a.post("/calls", { householdId: owner.id, transcript: "onion" })).json()) as CallResult;
+  const card = call.actions.find((c) => c.type === "cart")!;
+  const ticket = new URL((await (await requestHandoff(a.base, card, owner.ownerToken)).json()).url).hash.slice(1);
+  const form = (base: string, path: string, body: Record<string, string>, cookie = "") =>
+    fetch(base + path, { method: "POST", redirect: "manual", headers: { cookie }, body: new URLSearchParams(body) });
+  const start = await form(b.base, "/instamart/open", { ticket });
+  assert.equal(start.status, 303);
+  assert.equal((await form(a.base, "/instamart/open", { ticket })).status, 410);
+  const cookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  const auth = new URL(start.headers.get("location")!);
+  assert.equal(auth.searchParams.get("client_id"), "registered-1");
+  const callback = await fetch(a.base + "/instamart/callback?code=owner-code&state=" + auth.searchParams.get("state"), { redirect: "manual", headers: { cookie } });
+  assert.equal(callback.headers.get("location"), "/instamart/addresses");
+  const addresses = await (await fetch(b.base + "/instamart/addresses", { headers: { cookie } })).text();
+  const csrf = addresses.match(/name="csrf" value="([^"]+)"/)![1]!;
+  assert.match(await (await form(a.base, "/instamart/variants", { address: "home", csrf }, cookie)).text(), /Fresh onion/);
+  const bill = await form(b.base, "/instamart/prepare", { csrf, line0: "sku-o" }, cookie);
+  assert.equal(bill.status, 200);
+  assert.match(await bill.text(), /₹32/);
+  assert.equal(registered, 1);
+});
+
 test("staging household connects to Swiggy staging", async (t) => {
   const registration: typeof fetch = async (url, init) => {
     assert.equal(String(url), "https://mcp-staging.swiggy.com/auth/register");
