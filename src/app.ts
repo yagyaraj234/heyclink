@@ -8,6 +8,9 @@ import { DIETS, GOALS, LANGS, MEAL_CHOICES, WEEKDAYS } from "./contracts.ts";
 import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
 import { planMeals } from "./pipeline/meals.ts";
+import { placeOrder } from "./actions/orders.ts";
+import { mockSwiggy } from "./actions/swiggy.ts";
+import type { Swiggy } from "./actions/swiggy.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
 import { openStore } from "./actions/store.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
@@ -26,6 +29,7 @@ export interface AppDeps {
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
   health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
   store?: Store; // default: a fresh in-memory database
+  swiggy?: Swiggy; // places approved orders; default: labelled mock orders
 }
 
 // STT providers sniff format from the file extension. The header is client input: anything but a plain token → "bin".
@@ -72,7 +76,7 @@ function parseSignup(body: unknown): Signup | string {
   };
 }
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore() }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const withStatus = ({ call, entries }: StoredCall) => ({
     ...call,
@@ -173,11 +177,23 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.json(withStatus(stored));
   });
 
-  app.post("/actions/:id/approve", (req, res) => {
+  app.post("/actions/:id/approve", async (req, res) => {
     const entry = store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
     if (card.type === "question" || card.type === "meal-plan") return void res.status(400).json({ error: `${card.type} cards are answered, not approved` });
+    // { order: "now" | ISO time } on a cart → an order card; approving that card is the explicit confirmation
+    const want: unknown = req.body?.order;
+    let scheduledFor: string | undefined;
+    if (want !== undefined) {
+      if (card.type !== "cart") return void res.status(400).json({ error: "only carts can be ordered" });
+      if (entry.done) return void res.status(409).json({ error: "cart already approved" });
+      if (want !== "now") {
+        const at = typeof want === "string" ? Date.parse(want) : NaN;
+        if (Number.isNaN(at)) return void res.status(400).json({ error: 'order must be "now" or an ISO time' });
+        scheduledFor = new Date(at).toISOString(); // UTC, so dueOrders can compare strings
+      }
+    }
     if (!entry.done && card.type === "cart") {
       const household = store.household(entry.householdId)!;
       household.history.push({
@@ -188,6 +204,16 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     }
     entry.done = true;
     store.saveAction(entry);
+    if (card.type === "cart" && want !== undefined) {
+      const order: ActionCard = { id: randomUUID(), type: "order", order: { cart: card.cart, status: "scheduled", ...(scheduledFor && { scheduledFor }) }, needsApproval: true };
+      store.addAction({ card: order, householdId: entry.householdId, callId: entry.callId, done: false });
+      return void res.json({ status: "approved", order });
+    }
+    if (card.type === "order") {
+      // no time = place now; a time = runDue places it once due
+      if (card.order.status === "scheduled" && !card.order.scheduledFor && !entry.placing) await placeOrder(entry, store, swiggy);
+      return void res.json({ status: "approved", order: card.order });
+    }
     res.json({ status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) });
   });
 
