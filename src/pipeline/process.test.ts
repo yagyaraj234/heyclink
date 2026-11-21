@@ -106,3 +106,22 @@ test("processCall: unsure lines become question cards in the order they were hea
   const cart = res.actions[0]!;
   assert.ok(cart.type === "cart" && cart.cart.lines.length === 1 && cart.cart.lines[0]!.item === "atta");
 });
+
+test("processCall: indic harness fixes LLM slips (dedh → 1.5, hari mirch → green-chilli) to match gold", async () => {
+  const { stt, calls: sttCalls } = fakeStt(case02.transcript, case02.lang);
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "dedh kilo pyaaz", itemWord: "pyaaz", qtyPhrase: "dedh kilo", item: "onion", qty: 1, unit: "kg", brand: null, confidence: 1 },
+      { raw: "paav kilo hari mirch", itemWord: "hari mirch", qtyPhrase: "paav kilo", item: "capsicum", qty: 250, unit: "g", brand: null, confidence: 1 },
+      { raw: "aadha litre dahi", itemWord: "dahi", qtyPhrase: "aadha litre", item: "curd", qty: 0.5, unit: "l", brand: null, confidence: 1 },
+    ],
+    advance: null,
+    notes: ["chawal bhi khatam hone wala hai"],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction, case02.gold);
+  // STT is also biased toward common spoken item words, not just this household's
+  assert.ok(sttCalls[0]!.keywords.includes("hari mirch"));
+});
