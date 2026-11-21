@@ -1102,7 +1102,7 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   cartItems = [onion, { ...rice, itemVariant: "1.5 kg" }, { ...rice, skuId: "rice-2", spinId: "rice-2", itemVariant: "1000 g" }];
   const bulkBill = await form("/instamart/continue", { csrf }, cookie);
   assert.equal(bulkBill.status, 409);
-  assert.match(await bulkBill.text(), /household limit/);
+  assert.match(await bulkBill.text(), /rice.*2500 g.*household limit.*2000 g/i);
   const bulkReopen = await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } });
   assert.equal(bulkReopen.status, 409);
   assert.equal(methods.filter(name => name === "update_cart").length, 1);
@@ -1110,6 +1110,10 @@ test("owner picks a real pack and sees the full Instamart bill before opening Sw
   const unknownPack = await form("/instamart/continue", { csrf }, cookie);
   assert.equal(unknownPack.status, 409);
   assert.match(await unknownPack.text(), /pack sizes/);
+  cartItems = [{ ...existing, itemName: "Bread", skuId: "loaf", spinId: "loaf", itemVariant: "300 g", quantity: 4 }];
+  const tooManyLoaves = await form("/instamart/continue", { csrf }, cookie);
+  assert.equal(tooManyLoaves.status, 409);
+  assert.match(await tooManyLoaves.text(), /bread.*4 pack.*household limit.*3 pack/i);
   cartItems = [existing, onion];
   payable = "₹56";
   const changed = await form("/instamart/continue", { csrf }, cookie);
