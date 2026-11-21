@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CallInput, CallResult, Extraction, GroceryLine, Household, Lang, Llm, Stt, Transcript } from "../contracts.ts";
+import type { CallInput, CallResult, Extraction, GroceryLine, Household, Lang, Llm, Stt, Transcript, Unit } from "../contracts.ts";
 import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveBrand, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
@@ -7,12 +7,24 @@ import { planActions } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
 
+/** A word that could mean several catalog items (चना → kabuli-chana | kala-chana); lane 2 turns it into a question card. */
+export interface Ambiguous {
+  raw: string;
+  qty: number;
+  unit: Unit;
+  candidates: string[];
+}
+/** Additive to the frozen contract: `ambiguous` is present only when non-empty. */
+export type PipelineExtraction = Extraction & { ambiguous?: Ambiguous[] };
+export type PipelineCallResult = CallResult & { extraction: PipelineExtraction };
+
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
   requested?: boolean; // optional in code only: replies recorded before the field existed lack it
   itemWord: string;
   qtyPhrase: string;
-  item: string | null; // null = not in our catalog
+  item: string | null; // null = not in our catalog, or ambiguous (then see candidates)
+  candidates?: string[]; // optional in code only, like `requested`
   brand: string | null;
 }
 interface LlmExtraction {
@@ -33,7 +45,7 @@ export const EXTRACTION_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["raw", "requested", "itemWord", "qtyPhrase", "item", "qty", "unit", "brand", "confidence"],
+        required: ["raw", "requested", "itemWord", "qtyPhrase", "item", "candidates", "qty", "unit", "brand", "confidence"],
         properties: {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
           requested: {
@@ -43,6 +55,11 @@ export const EXTRACTION_SCHEMA = {
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
           item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the product is not in the catalog. A product whose name merely contains a catalog word is not that item: 'cheez-pa potato chips', 'kaju katli', 'chocolate ice cream' → null; never split one product name into several lines" },
+          candidates: {
+            type: "array",
+            items: { type: "string", enum: ITEMS },
+            description: "2-4 catalog ids when the spoken word could mean several catalog items (चना → kabuli-chana, kala-chana; daal → toor-dal, moong-dal, masoor-dal); item is null then. [] when item is set or the product is not in the catalog",
+          },
           qty: { type: "number" },
           unit: { type: "string", enum: UNITS },
           brand: { ...nullable("string"), description: "lowercase kebab-case brand id, e.g. 'aashirvaad', 'india-gate'" },
@@ -111,14 +128,19 @@ function resolveTail(phrase: string): string | null {
   return null;
 }
 
-function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
+function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine[] {
   if (l.requested === false) return [];
   // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
   const branded = harness && spokenBrand(l.itemWord) !== undefined;
-  const item = harness
+  let item = harness
     ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord) ?? resolveTail(l.raw))
     : l.item;
-  if (!item || !(ITEMS as string[]).includes(item)) return [];
+  if (!item || !(ITEMS as string[]).includes(item)) {
+    // ambiguous word ("चना"): the one candidate this household already buys settles it
+    const seen = (l.candidates ?? []).filter((c) => known.has(c));
+    if (new Set(seen).size !== 1) return [];
+    item = seen[0]!;
+  }
   // the spoken word beats the LLM's transliteration of it (हैंको vs "hanco"); the LLM's slug is matched whole,
   // never cut to a brand word inside it ("tata-sampann" stays, not tata)
   const brand = harness ? (spokenBrand(l.itemWord) ?? (l.brand ? (resolveBrand(l.brand) ?? l.brand) : undefined)) : l.brand;
@@ -146,16 +168,17 @@ export interface PipelineOptions {
   harness?: boolean;
 }
 
-export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true }: PipelineOptions = {}): Promise<Extraction> {
+export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true }: PipelineOptions = {}): Promise<PipelineExtraction> {
   const context = harness ? `Household: ${householdContext(household)}\n` : "";
+  const known = new Set(harness ? household.history.flatMap((o) => o.lines.map((l) => l.item)) : []);
   const out = await ports.llm.json<LlmExtraction>({
     system: harness ? SYSTEM + HARNESS_RULES : SYSTEM,
     user: `${context}Language hint: ${lang}\nVoice note: ${text}`,
     schema: EXTRACTION_SCHEMA,
     schemaName: "extraction",
   });
-  const extraction: Extraction = {
-    groceries: out.groceries.flatMap((l) => toLine(l, harness)),
+  const extraction: PipelineExtraction = {
+    groceries: out.groceries.flatMap((l) => toLine(l, harness, known)),
     notes: out.notes,
   };
   if (out.advance) {
@@ -169,7 +192,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
 const TOO_LONG = /maximum limit of 30 seconds|batch API/i;
 
 /** fallbackStt: used only when `stt` hits Sarvam's length limit; defaults to OpenAI. */
-export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<CallResult> {
+export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<PipelineCallResult> {
   const t0 = performance.now();
   const opts: { lang?: Lang; keywords: string[] } = { keywords: options.harness === false ? [] : sttKeywords(household) };
   if (input.lang) opts.lang = input.lang;
