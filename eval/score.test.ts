@@ -18,7 +18,7 @@ test("summarizeLatency on one sample and on none", () => {
 test("scoreExtraction: identical extraction scores full marks", () => {
   const c = JSON.parse(readFileSync("fixtures/cases/cook-hinglish-01.json", "utf8"));
   assert.deepEqual(scoreExtraction(c.gold, c.gold), {
-    goldLines: 3, predLines: 3, lineExact: 3, itemOnly: 3, brandGold: 2, brandCorrect: 2, advanceCorrect: true,
+    goldLines: 3, predLines: 3, lineExact: 3, itemOnly: 3, brandGold: 2, brandCorrect: 2, advanceCorrect: true, advanceGold: true, advancePred: true,
   });
 });
 
@@ -42,8 +42,21 @@ test("scoreExtraction: unit normalization, partial credit, duplicates, missing a
     notes: [],
   };
   assert.deepEqual(scoreExtraction(gold, pred), {
-    goldLines: 4, predLines: 6, lineExact: 3, itemOnly: 4, brandGold: 1, brandCorrect: 0, advanceCorrect: false,
+    goldLines: 4, predLines: 6, lineExact: 3, itemOnly: 4, brandGold: 1, brandCorrect: 0, advanceCorrect: false, advanceGold: true, advancePred: false,
   });
   assert.equal(scoreExtraction({ groceries: [], notes: [] }, { groceries: [], notes: [] }).advanceCorrect, true);
   assert.equal(scoreExtraction({ groceries: [], notes: [] }, { groceries: [], advance: { amount: 500 }, notes: [] }).advanceCorrect, false);
+});
+
+test("scoreExtraction: advance presence flags for precision/recall", () => {
+  const none: Extraction = { groceries: [], notes: [] };
+  const adv = (amount: number): Extraction => ({ groceries: [], advance: { amount }, notes: [] });
+  const flags = (g: Extraction, p: Extraction) => {
+    const s = scoreExtraction(g, p);
+    return [s.advanceGold, s.advancePred, s.advanceCorrect];
+  };
+  assert.deepEqual(flags(none, adv(500)), [false, true, false]); // invented advance
+  assert.deepEqual(flags(adv(500), adv(500)), [true, true, true]);
+  assert.deepEqual(flags(adv(500), adv(1000)), [true, true, false]);
+  assert.deepEqual(flags(adv(500), none), [true, false, false]);
 });

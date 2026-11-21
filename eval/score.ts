@@ -13,6 +13,7 @@ import type { Extraction, GroceryLine, LatencySummary } from "../src/contracts.t
  * - itemOnly: item agrees, qty/unit may be wrong. lineExact <= itemOnly.
  * - brandCorrect: over gold lines that carry a brand, the matched pred line has the same brand.
  * - advanceCorrect: both absent, or both present with equal amount. Reason is not scored.
+ *   advanceGold / advancePred: presence flags, for advance precision/recall at table level.
  * `raw`, `confidence` and `notes` are not scored.
  */
 export interface ExtractionScore {
@@ -23,6 +24,8 @@ export interface ExtractionScore {
   brandGold: number;
   brandCorrect: number;
   advanceCorrect: boolean;
+  advanceGold: boolean;
+  advancePred: boolean;
 }
 
 const base = (l: GroceryLine) =>
@@ -55,6 +58,8 @@ export function scoreExtraction(gold: Extraction, pred: Extraction): ExtractionS
     brandGold: branded.length,
     brandCorrect: branded.filter(([g, p]) => p?.brand === g.brand).length,
     advanceCorrect: gold.advance?.amount === pred.advance?.amount,
+    advanceGold: gold.advance !== undefined,
+    advancePred: pred.advance !== undefined,
   };
 }
 
