@@ -5,6 +5,7 @@ Generated 2026-11-21T06:55:46.192Z. Real speech only (self-recorded cook notes +
 > IndicVoices gold read from `eval/data/indicvoices/drafts`: unreviewed drafts that `eval/prelabel.ts` produced by running our own harness extraction on the human transcript.
 > So extraction F1 here is partly circular: it mostly measures how well extraction survives STT errors, not whether it's correct. Rerun against reviewed `eval/gold/indicvoices/` before quoting.
 > WER is not provisional: its reference is the human IndicVoices transcript.
+> Transcripts quoted below: SPRINGLab/IndicVoices-R, CC-BY-4.0.
 
 No audio yet for 30 gold cases (30 recorded); they are not in this table.
 
@@ -31,7 +32,7 @@ No audio yet for 30 gold cases (30 recorded); they are not in this table.
 ### Reading it (hand notes on this run)
 
 - **n is tiny.** Gold lines: hi 11 (9 branded), te 5 (sarvam te 3, because one clip errored). Each hi line is about 9 points of recall. 25 of the 40 drafts have no grocery line at all (price queries, "repeat order", products not in `fixtures/items.json`), so precision on those clips counts for a lot. Advance has 0 gold positives, so its F1 is undefined; nothing invented an advance (FP 0 everywhere).
-- **Harness helps on hi.** qty+unit F1 goes 0.78→0.86 on openai and 0.80→0.91 on sarvam; sarvam+harness gets item F1 1.00. On te the n is too small to call.
+- **Harness vs plain is confounded.** The drafts were made in harness mode (resolver ids, quantity normalizer, household context), so harness runs earn credit just for matching them. That shows as qty+unit F1 0.78→0.86 (openai) and 0.80→0.91 (sarvam), but it is not evidence that harness is better until gold is reviewed. With 11 lines and one LLM sample per config, a single line moves F1 by about 0.09.
 - **Sarvam is the fastest end to end.** p50 total is about 3.0 s against 4.2–4.4 s for openai, because STT is about 0.4 s against 1.6 s. Extraction (about 2.7 s p50) dominates every provider. Plan is under 1 ms.
 - **whisper-cpp is not usable as configured.** Its harness mode passes roman keywords as `--prompt`, which flips output to Latin script: WER is cross-script on 5/31 hi and 9/9 te clips. On te plain it loops: stt p50 is 12.9 s and the output is truncated mid-codepoint (`�`).
 - **Sarvam rejects audio over 30 s** (`iv-te-bigbasket-dafb1ddf`): "use the batch API". The adapter needs a fallback or chunking.
