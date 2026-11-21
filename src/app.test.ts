@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { CallResult, Extraction, Household, Llm, Stt } from "./contracts.ts";
 import case01 from "../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
@@ -209,4 +211,26 @@ test("GET /calls?householdId lists that household's calls, newest first", async 
 
   assert.equal((await fetch(`${base}/calls?householdId=nope`)).status, 404);
   assert.equal((await fetch(`${base}/calls`)).status, 404);
+});
+
+test("serves the built web UI from webDir; API routes win over same-named files", async (t) => {
+  const webDir = mkdtempSync(join(tmpdir(), "vfi-web-"));
+  mkdirSync(join(webDir, "households"));
+  writeFileSync(join(webDir, "index.html"), "<!doctype html><title>vfi</title>");
+  writeFileSync(join(webDir, "households", "h1"), "static-shadow");
+  writeFileSync(join(webDir, "calls"), "static-shadow");
+  const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, webDir }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => {
+    server.close();
+    rmSync(webDir, { recursive: true });
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const index = await fetch(`${base}/`);
+  assert.equal(index.status, 200);
+  assert.match(index.headers.get("content-type") ?? "", /text\/html/);
+  assert.equal(await index.text(), "<!doctype html><title>vfi</title>");
+  assert.equal(((await (await fetch(`${base}/households/h1`)).json()) as Household).id, "h1");
+  assert.deepEqual(await (await fetch(`${base}/calls?householdId=h1`)).json(), []);
 });

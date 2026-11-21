@@ -17,6 +17,7 @@ export interface AppDeps {
   stt: Stt;
   llm: Llm;
   corsOrigin?: string; // default "*": the API has no cookies or auth
+  webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
 }
 
 // STT providers sniff format from the file extension. The header is client input: anything but a plain token → "bin".
@@ -27,7 +28,7 @@ const extFor = (contentType = "") => {
   return /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 };
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist") }: AppDeps) {
   // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
   const calls = new Map<string, CallResult>();
@@ -156,6 +157,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) 
     if (!household) return void res.status(404).json({ error: "unknown household" });
     res.json(household);
   });
+
+  app.use(express.static(webDir));
 
   app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
     res.status(err.status ?? 500).json({ error: err.message });
