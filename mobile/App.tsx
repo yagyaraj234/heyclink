@@ -2,34 +2,56 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
+import * as SecureStore from "expo-secure-store";
+import * as Speech from "expo-speech";
+import { OwnerAlerts, useCartNotification, type Tracking } from "./OwnerAlerts.tsx";
+import { CartReview, PackLines, type ReviewCart } from "./CartReview.tsx";
+import { API, api, postJson, rupees } from "./api.ts";
 import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder } from "expo-audio";
 import type { ActionCard, CallResult, Cart, Diet, Goal, Lang, Macros, MealChoice, Order, Weekday } from "../src/contracts.ts";
 
-// The API runs on the same machine as the Expo dev server, so default to its LAN host on :3000.
-const API = process.env.EXPO_PUBLIC_API_URL ?? `http://${(Constants.expoConfig?.hostUri ?? "localhost").split(":")[0]}:3000`;
 // The seeded demo household, for skipping signup/join.
 const DEMO_HOUSEHOLD = "h1";
 
 type ActionStatus = "pending" | "approved" | "answered";
-type Call = CallResult & { status: Record<string, ActionStatus> };
+type Call = CallResult & { status: Record<string, ActionStatus>; tracking?: Record<string, Tracking>; usage?: { item: string; qty: number; unit: string; days: number; samples: number }[] };
+type LooseAction = { card: ActionCard; status: ActionStatus; at: string; tracking?: Tracking };
 type Role = "owner" | "cook";
 
-const rupees = (n: number) => `₹${n.toLocaleString("en-IN")}`;
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(API + path, init);
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `${res.status}`);
-  return body as T;
-}
-const postJson = <T,>(path: string, body: unknown) =>
-  api<T>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+type OwnerSession = { id: string; ownerToken?: string; instamartAvailable?: boolean };
+type CookSession = { id: string; lang: Lang };
 
 export default function App() {
   const [role, setRole] = useState<Role | null>(null);
   // Kept per role so one phone can demo signup on the owner side and join on the cook side.
-  const [ownerHouse, setOwnerHouse] = useState<string | null>(null);
-  const [cookHouse, setCookHouse] = useState<string | null>(null);
+  const [ownerHouse, setOwnerHouse] = useState<OwnerSession | null>(null);
+  const [cookHouse, setCookHouse] = useState<CookSession | null>(null);
+  const alert = useCartNotification();
+  useEffect(() => { if (alert && ownerHouse) setRole("owner"); }, [alert, ownerHouse]);
+  const [restoring, setRestoring] = useState(true);
+  const [sessionError, setSessionError] = useState("");
+  useEffect(() => {
+    async function restore() {
+      try {
+        const [owner, cook] = await Promise.all(["kitchen.owner", "kitchen.cook"].map((key) => SecureStore.getItemAsync(key)));
+        if (owner) setOwnerHouse(JSON.parse(owner));
+        if (cook) setCookHouse(JSON.parse(cook));
+      } catch {
+        setSessionError("Saved kitchen could not be opened on this phone.");
+      } finally {
+        setRestoring(false);
+      }
+    }
+    void restore();
+  }, []);
+  const remember = async (key: string, session: OwnerSession | CookSession) => {
+    if (session.id === DEMO_HOUSEHOLD) return;
+    try {
+      await SecureStore.setItemAsync(key, JSON.stringify(session));
+    } catch {
+      setSessionError("Kitchen available for this session. This phone could not save it for next time.");
+    }
+  };
   return (
     <View style={s.screen}>
       <StatusBar style="dark" />
@@ -41,9 +63,11 @@ export default function App() {
           </Pressable>
         )}
       </View>
-      {role === null && <RolePick onPick={setRole} />}
-      {role === "cook" && (cookHouse ? <Cook householdId={cookHouse} /> : <Join onJoin={setCookHouse} />)}
-      {role === "owner" && (ownerHouse ? <Owner householdId={ownerHouse} /> : <Signup onDone={setOwnerHouse} />)}
+      {sessionError !== "" && <Text style={s.error}>{sessionError}</Text>}
+      {restoring && <ActivityIndicator />}
+      {!restoring && role === null && <RolePick onPick={setRole} />}
+      {role === "cook" && (cookHouse ? <Cook householdId={cookHouse.id} lang={cookHouse.lang} /> : <Join onJoin={(session) => { setCookHouse(session); void remember("kitchen.cook", session); }} />)}
+      {role === "owner" && (ownerHouse ? <Owner key={alert?.requestId} alert={alert?.cartId ?? ""} householdId={ownerHouse.id} ownerToken={ownerHouse.ownerToken} instamartAvailable={ownerHouse.instamartAvailable} /> : <Signup onDone={setOwnerHouse} onRegistered={(session) => remember("kitchen.owner", session)} />)}
     </View>
   );
 }
@@ -53,7 +77,7 @@ function RolePick({ onPick }: { onPick: (r: Role) => void }) {
     <View style={s.center}>
       <Text style={s.h2}>Who is using this phone?</Text>
       <Pressable style={s.bigBtn} onPress={() => onPick("owner")}><Text style={s.bigBtnText}>I run the house</Text></Pressable>
-      <Pressable style={s.bigBtn} onPress={() => onPick("cook")}><Text style={s.bigBtnText}>मैं खाना बनाती/बनाता हूँ</Text></Pressable>
+      <Pressable style={s.bigBtn} onPress={() => onPick("cook")}><Text style={s.bigBtnText}>Cook · వంటవారు · रसोइया</Text></Pressable>
     </View>
   );
 }
@@ -91,7 +115,7 @@ function Field({ label, ...props }: { label: string } & React.ComponentProps<typ
   );
 }
 
-function Signup({ onDone }: { onDone: (householdId: string) => void }) {
+function Signup({ onDone, onRegistered }: { onDone: (session: OwnerSession) => void; onRegistered: (session: OwnerSession) => Promise<void> }) {
   const [f, setF] = useState({ ownerName: "", ownerPhone: "", cookName: "", upiId: "", salary: "", limit: "500", protein: "" });
   const [lang, setLang] = useState<Lang>("hi");
   const [offDays, setOffDays] = useState<Weekday[]>([]);
@@ -99,7 +123,7 @@ function Signup({ onDone }: { onDone: (householdId: string) => void }) {
   const [diet, setDiet] = useState<Diet>("veg");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ id: string; code: string } | null>(null);
+  const [done, setDone] = useState<(OwnerSession & { cookCode: string }) | null>(null);
   const set = (k: keyof typeof f) => (v: string) => setF((p) => ({ ...p, [k]: v }));
   const num = (v: string) => Number(v.replace(/[^\d.]/g, "")) || 0;
 
@@ -107,13 +131,14 @@ function Signup({ onDone }: { onDone: (householdId: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const { id, cookCode } = await postJson<{ id: string; cookCode: string }>("/households", {
+      const session = await postJson<OwnerSession & { cookCode: string }>("/households", {
         owner: { name: f.ownerName.trim(), phone: f.ownerPhone.trim() },
         cook: { name: f.cookName.trim(), lang, upiId: f.upiId.trim(), monthlySalary: num(f.salary), offDays },
         approvalLimit: num(f.limit),
         goals: { goal, diet, ...(f.protein ? { proteinG: num(f.protein) } : {}) },
       });
-      setDone({ id, code: cookCode });
+      await onRegistered({ id: session.id, ownerToken: session.ownerToken, instamartAvailable: session.instamartAvailable });
+      setDone(session);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -125,13 +150,13 @@ function Signup({ onDone }: { onDone: (householdId: string) => void }) {
     return (
       <View style={s.center}>
         <Text style={s.h2}>Give this to {f.cookName.trim() || "your cook"}</Text>
-        <Text style={s.code} selectable>{done.code}</Text>
+        <Text style={s.code} selectable>{done.cookCode}</Text>
         <Text style={[s.muted, s.centerText]}>They enter it on the cook side of the app.</Text>
-        <Pressable style={s.bigBtn} onPress={() => onDone(done.id)}><Text style={s.bigBtnText}>Go to the feed</Text></Pressable>
+        <Pressable style={s.bigBtn} onPress={() => onDone({ id: done.id, ownerToken: done.ownerToken, instamartAvailable: done.instamartAvailable })}><Text style={s.bigBtnText}>Go to the feed</Text></Pressable>
       </View>
     );
   }
-  const ready = f.ownerName.trim() && f.cookName.trim() && f.upiId.trim();
+  const ready = f.ownerName.trim() && f.ownerPhone.trim() && f.cookName.trim() && f.upiId.trim();
   return (
     <ScrollView contentContainerStyle={s.form} keyboardShouldPersistTaps="handled">
       <Text style={s.h3}>You</Text>
@@ -157,12 +182,12 @@ function Signup({ onDone }: { onDone: (householdId: string) => void }) {
       <Pressable style={[s.bigBtn, (!ready || busy) && s.disabled]} disabled={!ready || busy} onPress={submit}>
         <Text style={s.bigBtnText}>{busy ? "…" : "Sign up"}</Text>
       </Pressable>
-      <Pressable onPress={() => onDone(DEMO_HOUSEHOLD)}><Text style={[s.link, s.centerText]}>Use the demo household</Text></Pressable>
+      <Pressable onPress={() => onDone({ id: DEMO_HOUSEHOLD })}><Text style={[s.link, s.centerText]}>Use the demo household</Text></Pressable>
     </ScrollView>
   );
 }
 
-function Join({ onJoin }: { onJoin: (householdId: string) => void }) {
+function Join({ onJoin }: { onJoin: (session: CookSession) => void }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,8 +195,8 @@ function Join({ onJoin }: { onJoin: (householdId: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const { householdId } = await postJson<{ householdId: string }>("/join", { code: code.trim().toUpperCase() });
-      onJoin(householdId);
+      const { householdId, cook } = await postJson<{ householdId: string; cook: { lang: Lang } }>("/join", { code: code.trim().toUpperCase() });
+      onJoin({ id: householdId, lang: cook.lang });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -180,116 +205,201 @@ function Join({ onJoin }: { onJoin: (householdId: string) => void }) {
   };
   return (
     <View style={s.center}>
-      <Text style={s.h2}>मालिक से मिला कोड डालें</Text>
+      <Text style={s.h2}>Kitchen code · ఇంటి కోడ్ · घर का कोड</Text>
       <TextInput style={[s.input, s.codeInput]} value={code} onChangeText={setCode} maxLength={6}
         autoCapitalize="characters" autoCorrect={false} placeholder="ABC123" />
       {error && <Text style={[s.error, s.centerText]}>{error}</Text>}
       <Pressable style={[s.bigBtn, (code.trim().length !== 6 || busy) && s.disabled]} disabled={code.trim().length !== 6 || busy} onPress={join}>
         <Text style={s.bigBtnText}>{busy ? "…" : "जुड़ें"}</Text>
       </Pressable>
-      <Pressable onPress={() => onJoin(DEMO_HOUSEHOLD)}><Text style={[s.link, s.centerText]}>डेमो घर इस्तेमाल करें</Text></Pressable>
+      <Pressable onPress={() => onJoin({ id: DEMO_HOUSEHOLD, lang: "hi" })}><Text style={[s.link, s.centerText]}>Demo kitchen · డెమో · डेमो</Text></Pressable>
     </View>
   );
 }
 
 // ---- Cook: hold to record, or type; both go to POST /calls --------------------
 
-function Cook({ householdId }: { householdId: string }) {
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY); // .m4a (AAC) on iOS and Android
-  const [recording, setRecording] = useState(false);
+const cookCopy = {
+  hi: { ordered: "ऑर्डर हो गया", delivered: "सामान आ गया", prompt: "दीदी/भैया को बताइए क्या चाहिए", record: "दबाकर बोलें", recording: "बोलिए… छोड़ते ही भेज देंगे", type: "या यहाँ लिखें…", send: "भेजें", sent: "भेज दिया ✓", listen: "सुनें", reply: "जवाब बोलने के लिए दबाएँ", questions: "आपसे एक सवाल", short: "थोड़ी देर तक दबाकर रखें", permission: "माइक की अनुमति नहीं मिली", choose: "यहाँ दबाकर जवाब दें", answered: "जवाब भेज दिया ✓", recap: "दूसरा सामान घरवाले देख सकते हैं।" },
+  te: { ordered: "ఆర్డర్ చేశారు", delivered: "సరుకులు వచ్చాయి", prompt: "ఇంటికి ఏమి కావాలో చెప్పండి", record: "నొక్కి పట్టుకొని మాట్లాడండి", recording: "మాట్లాడండి… వదిలితే పంపబడుతుంది", type: "లేదా ఇక్కడ రాయండి…", send: "పంపండి", sent: "పంపించాం ✓", listen: "వినండి", reply: "జవాబు చెప్పడానికి నొక్కి పట్టుకోండి", questions: "మీకు ఒక ప్రశ్న", short: "కాసేపు నొక్కి పట్టుకోండి", permission: "మైక్ అనుమతి ఇవ్వండి", choose: "జవాబు ఎంచుకోండి", answered: "జవాబు పంపించాం ✓", recap: "మిగతా సరుకులు ఇంట్లోవారికి కనిపిస్తాయి." },
+  en: { ordered: "Ordered", delivered: "Delivered", prompt: "What does the kitchen need?", record: "Hold to speak", recording: "Listening… release to send", type: "Or type a message…", send: "Send", sent: "Sent ✓", listen: "Listen", reply: "Hold to reply by voice", questions: "A question for you", short: "Hold a little longer to record", permission: "Allow microphone access to record", choose: "Choose your answer", answered: "Answer sent ✓", recap: "The household can review the other items already." },
+};
+
+type CookQuestion = Extract<ActionCard, { type: "question" }> & { prompt?: { text: string; options: string[] } };
+
+function Cook({ householdId, lang }: { householdId: string; lang: Lang }) {
+  const copy = cookCopy[lang];
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [text, setText] = useState("");
+  const [sent, setSent] = useState("");
   const [busy, setBusy] = useState(false);
-  const [sent, setSent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
+  const [error, setError] = useState("");
+  const [calls, setCalls] = useState<Call[]>([]);
+  const [loose, setLoose] = useState<LooseAction[]>([]);
+  const [recording, setRecording] = useState<string | null>(null);
+  const held = useRef(false);
+  const micTarget = useRef<string | null>(null);
+  const startedAt = useRef(0);
+  function readFeed() {
+    return Promise.all([api<Call[]>(`/calls?householdId=${householdId}`), api<LooseAction[]>(`/households/${householdId}/actions`)]);
+  }
+  const load = async () => {
+    const [latest, outsideCalls] = await readFeed();
+    setCalls(latest);
+    setLoose(outsideCalls);
+  };
   useEffect(() => {
-    requestRecordingPermissionsAsync()
-      .then((p) => (p.granted ? setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true }) : setError("माइक की अनुमति नहीं मिली")))
-      .catch((e: Error) => setError(e.message));
-  }, []);
+    let mounted = true;
+    let loading = false;
+    async function poll() {
+      if (loading) return;
+      loading = true;
+      try {
+        const [current, outsideCalls] = await readFeed();
+        if (mounted) { setCalls(current); setLoose(outsideCalls); }
+      } catch {
+        // Submission and answer failures show inline; polling retries when the device reconnects.
+      } finally {
+        loading = false;
+      }
+    }
+    void poll();
+    const timer = setInterval(poll, 4000);
+    return () => { mounted = false; clearInterval(timer); void Speech.stop(); };
+  }, [householdId]);
 
-  const send = async (init: RequestInit) => {
+  const send = async (init: RequestInit, question?: string) => {
     setBusy(true);
-    setError(null);
-    setSent(null);
+    setError("");
     try {
-      const call = await api<CallResult>(`/calls?householdId=${householdId}`, { method: "POST", ...init });
-      setSent(call.transcript.text);
+      if (question) {
+        await api(`/actions/${question}/answer`, init);
+        setSent(copy.answered);
+      } else {
+        const call = await api<Call>(`/calls?householdId=${householdId}&lang=${lang}`, init);
+        setCalls((prev) => [call, ...prev.filter((c) => c.callId !== call.callId)]);
+        setSent(`${copy.sent} · ${call.transcript.text}`);
+        if (init.headers && typeof init.body === "string") setText("");
+      }
+      await load();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
-
-  // Refs, not state: a quick tap can release before prepare finishes, and stop must see that.
-  const held = useRef(false);
-  const startedAt = useRef(0);
-  const start = async () => {
+  const start = async (target: string) => {
+    if (micTarget.current !== null || busy) return;
     held.current = true;
-    setError(null);
+    micTarget.current = target;
+    setError("");
     try {
-      await recorder.prepareToRecordAsync();
-      if (!held.current) return; // released while preparing; don't leave the mic on
+      await Speech.stop();
+      if (!(await requestRecordingPermissionsAsync()).granted) throw new Error(copy.permission);
+      if (held.current) {
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        await recorder.prepareToRecordAsync();
+      }
+      if (!held.current) { micTarget.current = null; return; }
       recorder.record();
       startedAt.current = Date.now();
-      setRecording(true);
+      setRecording(target);
     } catch (e) {
       setError((e as Error).message);
+      micTarget.current = null;
     }
   };
-  const stop = async () => {
+  const stop = async (target: string) => {
+    if (micTarget.current !== target) return;
     held.current = false;
     if (!startedAt.current) return;
-    const ms = Date.now() - startedAt.current;
+    const length = Date.now() - startedAt.current;
     startedAt.current = 0;
-    setRecording(false);
-    await recorder.stop();
-    if (ms < 500) return setError("थोड़ा देर तक दबाकर रखें");
-    if (!recorder.uri) return setError("रिकॉर्डिंग नहीं मिली");
-    // The server takes the raw bytes; audio/mp4 maps to .m4a for the STT provider.
-    const blob = await (await fetch(recorder.uri)).blob();
-    await send({ headers: { "content-type": "audio/mp4" }, body: blob });
+    setRecording(null);
+    setBusy(true);
+    try {
+      await recorder.stop();
+      if (length < 500 || !recorder.uri) throw new Error(copy.short);
+      const blob = await (await fetch(recorder.uri)).blob();
+      await send({ method: "POST", headers: { "content-type": "audio/mp4" }, body: blob }, target === "note" ? undefined : target);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      micTarget.current = null;
+      setBusy(false);
+    }
   };
+  const microphone = (target: string) => <Pressable accessibilityRole="button"
+    accessibilityLabel={target === "note" ? copy.record : copy.reply}
+    disabled={busy || (recording !== null && recording !== target)}
+    onPressIn={() => void start(target)} onPressOut={() => void stop(target)}
+    style={target === "note" ? [s.mic, recording === target && s.micOn, busy && s.disabled] : [s.btn, recording === target && s.micOn]}>
+    <Text style={target === "note" ? s.micIcon : s.btnText}>{target === "note" ? (recording === target ? "●" : "🎤") : recording === target ? copy.recording : copy.reply}</Text>
+  </Pressable>;
 
   return (
     <ScrollView contentContainerStyle={s.cook} keyboardShouldPersistTaps="handled">
-      <Text style={s.h2}>दीदी/भैया को बताइए क्या चाहिए</Text>
-      <Pressable onPressIn={start} onPressOut={stop} disabled={busy}
-        style={[s.mic, recording && s.micOn, busy && s.disabled]} accessibilityLabel="दबाकर बोलें">
-        <Text style={s.micIcon}>{recording ? "●" : "🎤"}</Text>
-      </Pressable>
-      <Text style={s.muted}>{recording ? "बोलिए… छोड़ते ही भेज देंगे" : "दबाकर रखें और बोलें"}</Text>
+      <Text style={s.h2}>{copy.prompt}</Text>
+      {microphone("note")}
+      <Text style={s.muted}>{recording === "note" ? copy.recording : copy.record}</Text>
       <View style={s.row}>
-        <TextInput style={s.input} placeholder="या यहाँ लिखें…" value={text} onChangeText={setText} editable={!busy} />
-        <Pressable style={[s.btn, (busy || !text.trim()) && s.disabled]} disabled={busy || !text.trim()} onPress={() => {
-          void send({ headers: { "content-type": "application/json" }, body: JSON.stringify({ householdId, transcript: text.trim() }) });
-          setText("");
-        }}>
-          <Text style={s.btnText}>भेजें</Text>
-        </Pressable>
+        <TextInput accessibilityLabel={copy.type} style={s.input} placeholder={copy.type} value={text} onChangeText={setText} editable={!busy} />
+        <Pressable accessibilityRole="button" style={[s.btn, (busy || !text.trim()) && s.disabled]} disabled={busy || !text.trim() || recording !== null} onPress={() => {
+          void send({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transcript: text.trim() }) });
+        }}><Text style={s.btnText}>{copy.send}</Text></Pressable>
       </View>
-      {busy && <ActivityIndicator style={{ marginTop: 16 }} />}
-      {sent !== null && (
-        <View style={s.card}>
-          <Text style={s.ok}>भेज दिया ✓</Text>
-          <Text style={s.body}>{sent}</Text>
-        </View>
-      )}
-      {error && <Text style={s.error}>{error}</Text>}
+      {busy && <ActivityIndicator />}
+      {sent !== "" && <Text style={s.ok}>{sent}</Text>}
+      {error !== "" && <Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>}
+      {[...loose.map((e) => ({ ...e, hasCart: false })), ...calls.flatMap((c) =>
+        c.actions.map((card) => ({ card, status: c.status[card.id], tracking: c.tracking?.[card.id], hasCart: c.actions.some((a) => a.type === "cart") }))
+      )].flatMap(({ card, status, tracking, hasCart }) => {
+        const progress = tracking?.state;
+        if (card.type === "cart" && progress) return [
+          <View key={card.id} style={s.card}>
+            <Text style={s.ok}>{copy[progress]}</Text>
+            <Text style={s.body}>{card.cart.lines.map((line) => line.item).join(", ")}</Text>
+          </View>,
+        ];
+        if (card.type !== "question" || status !== "pending") return [];
+        const question = card as CookQuestion;
+        const prompt = question.prompt ?? question;
+        const speak = async () => {
+          await Speech.stop();
+          Speech.speak([prompt.text, ...prompt.options].join(". "), {
+            language: { hi: "hi-IN", te: "te-IN", en: "en-IN" }[lang],
+            onError: (err) => setError(err.message),
+          });
+        };
+        return [<View key={card.id} style={s.card}>
+          <Text style={s.meta}>{copy.questions}</Text>
+          <Text style={s.body}>{prompt.text}</Text>
+          {hasCart && <Text style={s.muted}>{copy.recap}</Text>}
+          <Pressable accessibilityRole="button" disabled={busy || recording !== null} onPress={() => void speak().catch((e: Error) => setError(e.message))}>
+            <Text style={s.link}>{copy.listen}</Text>
+          </Pressable>
+          <Text style={s.label}>{copy.choose}</Text>
+          <View style={s.options}>{question.options.map((option, i) =>
+            <Pressable accessibilityRole="button" key={option} style={s.seg} disabled={busy || recording !== null}
+              onPress={() => void send({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ option }) }, card.id)}>
+              <Text style={s.segText}>{prompt.options[i] ?? option}</Text>
+            </Pressable>)}</View>
+          {microphone(card.id)}
+        </View>];
+      })}
     </ScrollView>
   );
 }
 
 // ---- Owner: poll the calls and act on cards ---------------------------------
 
-function Owner({ householdId }: { householdId: string }) {
+function Owner({ householdId, ownerToken, instamartAvailable, alert }: { householdId: string; alert: string; ownerToken?: string; instamartAvailable?: boolean }) {
   const [calls, setCalls] = useState<Call[]>([]); // newest first, as the server returns them
   const [errors, setErrors] = useState<Record<string, string>>({}); // card id (or "feed") → message
   const [busy, setBusy] = useState<string | null>(null);
   const inFlight = useRef(false);
   // cards outside any call (meal plans, their cook carts, orders from those), newest first
-  const [loose, setLoose] = useState<{ card: ActionCard; status: ActionStatus; at: string }[]>([]);
+  const [loose, setLoose] = useState<LooseAction[]>([]);
 
   const load = async () => {
     if (inFlight.current) return;
@@ -326,9 +436,9 @@ function Owner({ householdId }: { householdId: string }) {
       setBusy(null);
     }
   };
-  const approve = (card: ActionCard, body?: { order: string }) =>
+  const approve = (card: ActionCard, body?: { order?: string; reviewId?: string }) =>
     act(card, async () => {
-      const r = await postJson<{ upiUrl?: string }>(`/actions/${card.id}/approve`, body ?? {});
+      const r = await postJson<{ upiUrl?: string }>(`/actions/${card.id}/approve`, body ?? {}, ownerToken);
       const upi = r.upiUrl ?? (card.type === "advance" ? card.upiUrl : undefined);
       if (upi) await Linking.openURL(upi).catch(() => { throw new Error(`Approved. No UPI app opened ${upi}`); });
     });
@@ -348,17 +458,26 @@ function Owner({ householdId }: { householdId: string }) {
     }
   };
 
+  const renderCard = (card: ActionCard, status?: ActionStatus, tracking?: Tracking, fromAlert = false) =>
+    <Card key={card.id} householdId={householdId} onReload={load} ownerToken={ownerToken} instamartAvailable={instamartAvailable}
+      tracking={tracking} fromAlert={fromAlert} card={card} status={status} busy={busy === card.id} error={errors[card.id]}
+      onApprove={(body) => approve(card, body)} onAnswer={(o) => answer(card, o)} />;
+  const fromCall = calls.find((call) => call.actions.some((a) => a.type === "cart" && a.id === alert));
+  const alertCard = fromCall?.actions.find((a) => a.id === alert);
+  const fromLoose = loose.find(({ card }) => card.type === "cart" && card.id === alert);
+
   return (
     <ScrollView contentContainerStyle={s.feed}>
+      {alertCard && renderCard(alertCard, fromCall?.status[alert], fromCall?.tracking?.[alert], true)}
+      {fromLoose && renderCard(fromLoose.card, fromLoose.status, fromLoose.tracking, true)}
+      <OwnerAlerts householdId={householdId} ownerToken={ownerToken} />
       <Pressable style={[s.btn, s.planBtn, planning && s.disabled]} disabled={planning} onPress={planTomorrow}>
         <Text style={s.btnText}>{planning ? "Planning…" : "🍽 Plan tomorrow"}</Text>
       </Pressable>
       {errors.plan && <Text style={s.error}>{errors.plan}</Text>}
       {errors.feed && <Text style={s.error}>{errors.feed}</Text>}
-      {loose.map(({ card, status }) => (
-        <Card key={card.id} card={card} status={status} busy={busy === card.id} error={errors[card.id]}
-          onApprove={(body) => approve(card, body)} onAnswer={(o) => answer(card, o)} />
-      ))}
+      {loose.filter(({ card }) => card.id !== fromLoose?.card.id)
+        .map(({ card, status, tracking }) => renderCard(card, status, tracking))}
       {calls.length === 0 && loose.length === 0 && !errors.feed && <Text style={[s.muted, s.centerText]}>No notes from the cook yet.</Text>}
       {calls.map((call) => (
         <View key={call.callId} style={s.call}>
@@ -366,11 +485,10 @@ function Owner({ householdId }: { householdId: string }) {
             <Text style={s.meta}>{call.transcript.lang} · {call.transcript.provider} · {Math.round(call.timings.totalMs)} ms</Text>
             <Text style={s.body}>{call.transcript.text}</Text>
           </View>
+          {call.usage?.map((u) => <Text key={u.item} style={s.muted}>{u.item} · {u.qty} {u.unit} lasted about {u.days} days ({u.samples} observed {u.samples === 1 ? "delivery" : "deliveries"}).</Text>)}
           {call.extraction.notes.map((n, i) => <Text key={i} style={s.muted}>📝 {n}</Text>)}
-          {call.actions.map((card) => (
-            <Card key={card.id} card={card} status={call.status[card.id]} busy={busy === card.id} error={errors[card.id]}
-              onApprove={(body) => approve(card, body)} onAnswer={(o) => answer(card, o)} />
-          ))}
+          {call.actions.filter((card) => card.id !== alertCard?.id)
+            .map((card) => renderCard(card, call.status[card.id], call.tracking?.[card.id]))}
         </View>
       ))}
     </ScrollView>
@@ -387,13 +505,6 @@ function Lines({ cart }: { cart: Cart }) {
   ));
 }
 
-function tomorrowAt8() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(8, 0, 0, 0);
-  return d.toISOString();
-}
-
 const when = (iso: string) =>
   new Date(iso).toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 
@@ -403,15 +514,20 @@ function orderStatus(o: Order) {
   return o.status === "failed" ? "Failed to place" : "Cancelled";
 }
 
-function Card({ card, status, busy, error, onApprove, onAnswer }: {
+function Card({ card, status, busy, error, onApprove, onAnswer, onReload, ownerToken, instamartAvailable, householdId, tracking, fromAlert }: {
+  tracking?: Tracking;
+  fromAlert: boolean;
+  householdId: string;
+  onReload: () => Promise<void>;
+  ownerToken?: string;
+  instamartAvailable?: boolean;
   card: ActionCard;
   status: ActionStatus | undefined;
   busy: boolean;
   error: string | undefined;
-  onApprove: (body?: { order: string }) => void;
+  onApprove: (body?: { order?: string; reviewId?: string }) => void;
   onAnswer: (option: string) => void;
 }) {
-  const [choosing, setChoosing] = useState(false); // cart: Approve reveals when to order
   const [tab, setTab] = useState<MealChoice>(card.type === "meal-plan" ? card.plan.suggested : "cook");
   const done = status !== undefined && status !== "pending";
   const action = (label: string, doneLabel: string, onPress: () => void) => (
@@ -421,23 +537,8 @@ function Card({ card, status, busy, error, onApprove, onAnswer }: {
   );
   let body;
   if (card.type === "cart") {
-    body = (
-      <>
-        <Text style={s.h3}>Cart <Text style={s.muted}>· {card.cart.platform}</Text></Text>
-        <Lines cart={card.cart} />
-        <View style={s.rowBetween}>
-          <Text style={s.h3}>Total {rupees(card.cart.total)}</Text>
-          {card.needsApproval && !done && <Text style={s.warn}>needs approval</Text>}
-          {!choosing || done ? action("Approve", "Approved ✓", () => setChoosing(true)) : null}
-        </View>
-        {choosing && !done && (
-          <View style={s.options}>
-            {action("Order now", "", () => onApprove({ order: "now" }))}
-            {action("Order tomorrow 8 AM", "", () => onApprove({ order: tomorrowAt8() }))}
-          </View>
-        )}
-      </>
-    );
+    body = <CartReview fromAlert={fromAlert} tracking={tracking} demo={householdId === DEMO_HOUSEHOLD} cardId={card.id} cart={card.cart as ReviewCart} done={done} busy={busy}
+      onReload={onReload} onApprove={onApprove} ownerToken={ownerToken} instamartAvailable={instamartAvailable} />;
   } else if (card.type === "advance") {
     body = (
       <>
@@ -447,7 +548,7 @@ function Card({ card, status, busy, error, onApprove, onAnswer }: {
           <Text style={s.muted}>{done ? "Pay again from your UPI app" : "Approve opens your UPI app"}</Text>
           {done && card.upiUrl
             ? <Pressable style={s.btn} onPress={() => void Linking.openURL(card.upiUrl!)}><Text style={s.btnText}>Pay via UPI</Text></Pressable>
-            : action("Approve", "Approved ✓", onApprove)}
+            : action("Approve", "Approved ✓", () => onApprove())}
         </View>
       </>
     );
@@ -470,10 +571,10 @@ function Card({ card, status, busy, error, onApprove, onAnswer }: {
           {order.cart.platform === "mock" && <Text style={s.warn}>demo order</Text>}
         </View>
         <Text style={s.body}>{orderStatus(order)}</Text>
-        <Lines cart={order.cart} />
+        <PackLines cart={order.cart} />
         <View style={s.rowBetween}>
           <Text style={s.h3}>Total {rupees(order.cart.total)} <Text style={s.muted}>· cash on delivery</Text></Text>
-          {action("Confirm", "Confirmed ✓", () => onApprove())}
+          {householdId === DEMO_HOUSEHOLD && order.cart.platform === "mock" && (order.cart as ReviewCart).reviewId && action("Confirm demo order", "Confirmed ✓", () => onApprove({ reviewId: (order.cart as ReviewCart).reviewId }))}
         </View>
       </>
     );
@@ -509,6 +610,8 @@ function Card({ card, status, busy, error, onApprove, onAnswer }: {
             <Lines cart={plan.cook.cart} />
           </>
         )}
+        {tab === "cook" && (plan.cook.cart as ReviewCart).held?.map((line, i) =>
+          <Text key={i} style={s.warn}>Left out · {line.raw || line.item} · {line.reason}</Text>)}
         <View style={s.rowBetween}>
           <Text style={s.muted}>{done ? "Picked ✓" : plan.suggested === tab ? "Suggested from your habits" : ""}</Text>
           {card.options.includes(tab) && action(tab === "cook" ? "Cook this" : "Order this", "Picked ✓", () => onAnswer(tab))}
