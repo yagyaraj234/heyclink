@@ -18,6 +18,7 @@ interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
   itemWord: string;
   qtyPhrase: string;
   quantityOmitted?: boolean;
+  quantityUnclear?: boolean;
   stockout?: boolean;
   item: string | null; // null = not in our catalog, or ambiguous (then see candidates)
   candidates?: string[]; // optional in code only, like `requested`
@@ -43,7 +44,7 @@ export const EXTRACTION_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["raw", "requested", "stockout", "quantityOmitted", "itemWord", "qtyPhrase", "item", "candidates", "qty", "unit", "brand", "confidence"],
+        required: ["raw", "requested", "stockout", "quantityOmitted", "quantityUnclear", "itemWord", "qtyPhrase", "item", "candidates", "qty", "unit", "brand", "confidence"],
         properties: {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
           requested: {
@@ -52,6 +53,7 @@ export const EXTRACTION_SCHEMA = {
           },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           stockout: { type: "boolean", description: "The cook says this item has actually run out, e.g. pyaaz khatam ho gaya. A stockout implies a request to restock." },
+          quantityUnclear: { type: "boolean", description: "True if the speaker gave an unclear quantity or garbled unit, e.g. two hand onions. Never guess a unit from the number alone." },
           quantityOmitted: { type: "boolean", description: "True only if the cook gave no amount. A spoken but unclear amount is not omitted." },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
           item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the product is not in the catalog. A product whose name merely contains a catalog word is not that item: 'cheez-pa potato chips', 'kaju katli', 'chocolate ice cream' → null; never split one product name into several lines" },
@@ -203,7 +205,13 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     const line = toLine(source, harness, known);
     if (!line || "candidates" in line) return line;
     if (source.stockout) stockouts.add(line.item);
-    if (!harness || !source.quantityOmitted || source.qtyPhrase.trim()) return line;
+    if (!harness) return line;
+    if (source.quantityUnclear) {
+      const pack = catalog[line.item];
+      return { ...line, qty: pack?.packSize ?? 1, unit: pack?.unit ?? "packet", confidence: Math.min(line.confidence, 0.5),
+        interpretation: "Spoken quantity unclear. Confirm one retail pack." };
+    }
+    if (!source.quantityOmitted || source.qtyPhrase.trim()) return line;
     const previous = household.history.flatMap(order => order.lines).findLast(bought => bought.item === line.item);
     if (previous && previous.qty > 0 &&
         !(previous.unit === "kg" && previous.qty > 2) && !(previous.unit === "g" && previous.qty > 2000)) {
