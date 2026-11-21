@@ -25,7 +25,7 @@ const obj = (properties: Record<string, object>, description?: string) => ({
 const num = { type: "number" };
 const meal = {
   slot: { type: "string", enum: ["breakfast", "lunch", "dinner"] },
-  dish: { type: "string", description: "short dish name, e.g. 'Palak paneer with roti'" },
+  dish: { type: "string", description: "2-4 word dish name as a menu lists it, e.g. 'Palak paneer', 'Moong dal chilla'; no qualifiers or question marks" },
   macros: obj({ kcal: num, proteinG: num, carbsG: num, fiberG: num, fatG: num }, "per serving, estimated"),
 };
 
@@ -34,15 +34,15 @@ export const MEAL_SCHEMA = obj({
     ingredients: {
       type: "array",
       items: obj({ item: { type: "string", enum: ITEMS }, qty: num, unit: { type: "string", enum: UNITS } }),
-      description: "catalog ingredients to buy for the whole family; skip salt, water and spices not in the list",
+      description: "catalog ingredients to buy for the whole family, in g, kg, ml or l (pieces don't price); skip salt, water and spices not in the list",
     },
   }) } }),
   order: obj({ meals: { type: "array", items: obj(meal) }, }, "dishes easy to order from a restaurant"),
 });
 
-const SYSTEM = `You plan one day of Indian home meals for a family: breakfast, lunch and dinner, twice.
-- cook: dishes the household cook makes at home.
-- order: dishes to order from a restaurant instead.
+const SYSTEM = `You plan one day of Indian meals for a family as two complete options; fill both.
+- cook.meals: exactly 3 (breakfast, lunch, dinner) the household cook makes at home.
+- order.meals: exactly 3 (breakfast, lunch, dinner) to order from a restaurant or Swiggy instead; common restaurant dish names.
 - Follow every diet rule and the diet type (veg: no meat, fish or egg; egg: veg plus eggs). Macros are per serving.
 - Aim to hit the daily protein and fiber targets across the three meals; for a "lose" goal keep meals light (lower kcal, less oil).`;
 
