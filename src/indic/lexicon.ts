@@ -147,10 +147,6 @@ for (const id of itemIds) lexicon.set(normalizeAlias(id), id);
 
 // One edit can turn these cleaner names into unrelated words such as "phenol" and "final".
 const exactOnly = new Set(["phenyl", "finail"]);
-// Keep tea lookup exact across scripts.
-for (const [alias, id] of lexicon) {
-  if (id === "tea") exactOnly.add(alias);
-}
 
 export function resolveItem(raw: string): string | null {
   return resolveAlias(raw, lexicon, exactOnly);
