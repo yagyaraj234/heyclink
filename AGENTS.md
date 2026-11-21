@@ -5,9 +5,9 @@ Hackathon build. Code freeze is Sun 2026-11-22 2 PM IST. Feature freeze is Sat 1
 
 ## Commands
 - `pnpm check`: typecheck plus all tests. It must pass before every commit.
-- `pnpm test`: `node --test`. Test files are `*.test.ts` next to the code.
+- `pnpm test`: `node --test`. Test files are `*.test.ts` next to the code. Needs a Postgres: put `TEST_DATABASE_URL` in `.env.test` (e.g. `docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17`).
 - `pnpm test:live`: opt-in tests that hit real APIs (need `LIVE=1` and keys). They never run in CI.
-- `pnpm dev`: Express server on `$PORT` (default 3000).
+- `pnpm dev`: Express server on `$PORT` (default 3000). Needs `DATABASE_URL`.
 
 ## Runtime rules (Node 26 native TypeScript; no build step)
 - Relative imports use the `.ts` extension: `import { x } from "./x.ts"`.
@@ -19,7 +19,7 @@ Hackathon build. Code freeze is Sun 2026-11-22 2 PM IST. Feature freeze is Sat 1
 | Lane | Folder | Owns |
 |---|---|---|
 | 1 pipeline | `src/pipeline/` | STT adapters (openai gpt-transcribe, sarvam saaras:v4, whisper.cpp), extraction via OpenAI structured outputs, resolver against `Household` |
-| 2 actions | `src/actions/`, `src/server.ts`, `src/app.ts` | mock catalog, search links, Instamart orders (own-account OAuth, COD), scheduler, UPI link/QR, advance approval, memory updates, signup and SQLite storage (`node:sqlite`), Express routes |
+| 2 actions | `src/actions/`, `src/server.ts`, `src/app.ts` | mock catalog, search links, Instamart orders (own-account OAuth, COD), scheduler, UPI link/QR, advance approval, memory updates, signup and Postgres storage (`pg`, Neon), Express routes |
 | 3 indic | `src/indic/` | lexicon (Devanagari/roman → canonical item id), quantity normalizer (paav, aadha, dedh, dhai, saade, number words, packet, darjan, gaddi), fuzzy matching |
 | 4 eval | `eval/` | dataset loaders, scorer, baselines, ablation, results table |
 | 5 web | `web/` | Vite + React thread UI (frozen for the demo; new UI goes in `mobile/`) |
@@ -42,7 +42,7 @@ If a lane needs another lane's function before it exists, stub it locally in you
 | pipeline | `processCall(input, household, { stt, llm }) → Promise<CallResult>` | fake `Stt`/`Llm` ports only; gold from `fixtures/cases`; result must include `timings` |
 | actions | `planActions(extraction, household) → ActionCard[]`, `buildCart(lines, household) → Promise<Cart>` | real mock catalog; asserts approval limit, UPI link, advance card |
 | actions | HTTP `POST /calls`, `POST /actions/:id/approve`, `POST /households` | `app.listen(0)` + `fetch` against the real app with fake ports injected |
-| actions | `runDue(now, store, swiggy) → Order[]` | real SQLite (`:memory:`), fake Swiggy client (network); places due scheduled orders exactly once |
+| actions | `runDue(now, store, swiggy) → Order[]` | real Postgres (a throwaway schema per store on `TEST_DATABASE_URL`), fake Swiggy client (network); places due scheduled orders exactly once |
 | pipeline | `planMeals(household, date, { llm }) → Promise<MealPlan>` | fake `Llm`; asserts `suggested` from habits, cart excludes pantry items, diet respected |
 | mobile | none | UI only; behavior lives behind the server seams |
 | eval | `scoreExtraction(gold, pred)`, `summarizeLatency(ms[]) → LatencySummary` | pure; latency expected values hand-computed (nearest-rank percentile) |
