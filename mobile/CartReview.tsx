@@ -35,7 +35,8 @@ export function PackLines({ cart }: { cart: ReviewCart }) {
   return cart.lines.map((line, i) => <View style={s.line} key={i}><PackLine line={line} /></View>);
 }
 
-export function CartReview({ cardId, cart, done, busy, onReload, onApprove, ownerToken, instamartAvailable, demo, fromAlert, tracking }: {
+export function CartReview({ cardId, cart, done, busy, onReload, onApprove, ownerToken, instamartAvailable, demo, fromAlert, tracking, pending }: {
+  pending: string[];
   fromAlert: boolean; tracking?: Tracking;
   cardId: string; cart: ReviewCart; done: boolean; busy: boolean; demo: boolean;
   onReload: () => Promise<void>;
@@ -127,6 +128,7 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
       </View>}
     </View>)}
     {reviewed.held?.map((line, i) => <Text key={i} style={s.notice}>Left out · {line.raw || line.item} · {line.reason}</Text>)}
+    {pending.map((question, i) => <Text key={i} style={s.notice}>Awaiting cook · {question}</Text>)}
     <Text style={s.item}>Item estimate {rupees(reviewed.total)}</Text>
     <Text style={s.muted}>Check your delivery address, ETA, fees and final payable total in Instamart before you pay.</Text>
     {stale && <>
