@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>voice-for-india</title>
+    <style>
+      :root { --bg: #f6f5f2; --panel: #fff; --ink: #1d1d1b; --muted: #77756f; --line: #e3e1db; --accent: #0b6e4f; --warn: #b45309; --cook: #fff4dc; color-scheme: light; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+      .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 100vh; }
+      main { display: flex; flex-direction: column; min-height: 0; }
+      header { display: flex; align-items: baseline; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+      h1 { font-size: 18px; margin: 0; } h2 { font-size: 16px; margin: 0 0 12px; } h3 { font-size: 14px; margin: 0 0 8px; }
+      .muted { color: var(--muted); } .center { text-align: center; }
+      .thread { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 22px; }
+      .call { display: flex; flex-direction: column; gap: 8px; }
+      .bubble { max-width: 75%; padding: 10px 14px; border-radius: 14px 14px 14px 4px; background: var(--cook); border: 1px solid #f0e2bd; }
+      .meta { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+      .reply { align-self: flex-end; width: min(560px, 90%); display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+      .notes { margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); align-self: stretch; }
+      .card { align-self: stretch; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+      .card p { margin: 0 0 8px; }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 8px; }
+      td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line); } .num { text-align: right; }
+      .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .row button:last-child { margin-left: auto; }
+      .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; }
+      .badge.ok { background: #e3f4ec; color: var(--accent); } .badge.warn { background: #fdecd8; color: var(--warn); }
+      .chip { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; font-variant-numeric: tabular-nums; }
+      button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+      button:disabled { opacity: .5; cursor: default; }
+      .options { display: flex; gap: 8px; flex-wrap: wrap; }
+      .options button { background: var(--panel); color: var(--accent); }
+      .options button.chosen { background: var(--accent); color: #fff; opacity: 1; }
+      a { color: var(--accent); } .upi { font-weight: 600; } code { font-size: 12px; word-break: break-all; color: var(--muted); }
+      .error { margin: 0 20px 8px; padding: 8px 12px; border-radius: 8px; background: #fdecec; color: #9b1c1c; }
+      .composer { display: flex; gap: 8px; align-items: center; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--panel); }
+      .composer .text { flex: 1; min-width: 0; font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+      .mic { width: 44px; height: 44px; border-radius: 50%; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
+      .mic.on { background: #c0392b; border-color: #c0392b; animation: pulse 1s infinite; }
+      @keyframes pulse { 50% { box-shadow: 0 0 0 6px #c0392b33; } }
+      .file { cursor: pointer; font-size: 20px; } .file input { display: none; }
+      aside { background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow-y: auto; font-size: 14px; }
+      aside ul { margin: 0 0 14px; padding-left: 18px; } dl { margin: 0 0 14px; } dt { font-weight: 600; margin-top: 6px; } dd { margin: 0; }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; height: auto; } main { height: 100vh; } aside { border-left: 0; border-top: 1px solid var(--line); } .bubble { max-width: 90%; } }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
