@@ -293,3 +293,51 @@ test("GET /health names the STT provider and LLM model and nothing else", async 
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true, stt: "sarvam", llm: "gpt-test" });
 });
+
+test("POST /calls?mode=plain runs the base model without household context and stores nothing", async (t) => {
+  const prompts: string[] = [];
+  const keywords: string[][] = [];
+  // the LLM hears no brand, so any brand on the cart comes from household memory
+  const reply = llmReplying({ groceries: [{ raw: "do kilo atta", item: "atta", qty: 2, unit: "kg", confidence: 1 }], advance: { amount: 500 }, notes: [] });
+  const llm: Llm = { json: async (req) => (prompts.push(`${req.system}\n${req.user}`), reply.json(req)) };
+  const stt: Stt = {
+    async transcribe(_path, opts) {
+      keywords.push(opts.keywords);
+      return { text: "do kilo atta aur paanch sau advance", lang: "hi", provider: "fake" };
+    },
+  };
+  const server = createApp({ processCall, stt, llm }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown) =>
+    fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const brands = /aashirvaad|india-gate/; // fixtures/household.json brands
+
+  const text = await post("/calls?mode=plain", { transcript: "do kilo atta aur paanch sau advance", householdId: "h1" });
+  const audio = await fetch(`${base}/calls?householdId=h1&mode=plain`, { method: "POST", headers: { "content-type": "audio/webm" }, body: "x" });
+  for (const res of [text, audio]) {
+    assert.equal(res.status, 200);
+    const call = (await res.json()) as CallResult & { status: object };
+    assert.deepEqual(call.status, {});
+    assert.deepEqual(call.actions.map((a) => a.type), ["cart", "advance"]);
+    const cart = call.actions[0]!;
+    // atta 2 kg at base 58 = 116, no household brand (harness would price aashirvaad @66 = 132)
+    assert.ok(cart.type === "cart");
+    assert.deepEqual(cart.cart.lines.map((l) => [l.brand, l.price]), [[undefined, 116]]);
+    assert.equal((await fetch(`${base}/calls/${call.callId}`)).status, 404);
+    for (const a of call.actions) assert.equal((await post(`/actions/${a.id}/approve`, {})).status, 404);
+  }
+  assert.equal(prompts.length, 2);
+  for (const p of prompts) assert.doesNotMatch(p, brands);
+  assert.deepEqual(keywords, [[]]); // audio: no household STT keywords either
+  assert.deepEqual(await (await fetch(`${base}/calls?householdId=h1`)).json(), []);
+
+  // default mode is still the harness, and its prompt does carry the household
+  const harness = (await (await post("/calls", { transcript: "do kilo atta", householdId: "h1" })).json()) as CallResult;
+  assert.match(prompts[2]!, brands);
+  const hCart = harness.actions[0]!;
+  assert.ok(hCart.type === "cart");
+  assert.deepEqual(hCart.cart.lines.map((l) => [l.brand, l.price]), [["aashirvaad", 132]]);
+  assert.equal((await post("/calls?mode=bogus", { transcript: "atta", householdId: "h1" })).status, 400);
+});
