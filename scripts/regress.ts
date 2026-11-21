@@ -1,7 +1,7 @@
 // Regression run against a live server: every fixtures/cases/*.json as a transcript, plus audio when
 // fixtures/cases/<id>.<ext> exists locally (audio is never committed). Exits 1 on any failure.
 // Usage: BASE_URL=https://host pnpm regress   (default http://localhost:3000)
-// Note: approving carts appends to the server's in-memory household history.
+// Approving carts mutates household h1, so the run ends with POST /households/h1/reset.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CallResult, Extraction } from "../src/contracts.ts";
@@ -74,6 +74,9 @@ for (const mode of new Set(rows.map((r) => r.mode))) {
   const { n, p50, p95, p99 } = summarizeLatency(rows.filter((r) => r.mode === mode && Number.isFinite(r.totalMs)).map((r) => r.totalMs));
   console.log(`totalMs ${mode}: n=${n} p50=${Math.round(p50)} p95=${Math.round(p95)} p99=${Math.round(p99)}`);
 }
-const failed = rows.filter((r) => r.fails.length).length;
-console.log(failed ? `${failed}/${rows.length} FAILED` : `all ${rows.length} passed`);
+// Reset even after failures so the demo box is left as it was; a failed reset fails the run.
+const reset = await post("/households/h1/reset", "{}", "application/json").then((r) => r.ok, () => false);
+console.log(`reset h1: ${reset ? "ok" : "FAILED"}`);
+const failed = rows.filter((r) => r.fails.length).length + (reset ? 0 : 1);
+console.log(failed ? `${failed} FAILED (of ${rows.length} cases + reset)` : `all ${rows.length} passed`);
 process.exitCode = failed ? 1 : 0;
