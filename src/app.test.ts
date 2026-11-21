@@ -1631,3 +1631,25 @@ test("answering a which-one question teaches the household that word; the next c
   assert.ok(cart.type === "cart");
   assert.deepEqual(cart.cart.lines.map((l) => l.item), ["kala-chana"]);
 });
+
+test("a word 3 households agree on resolves for every household of that language; 2 are not enough", async (t) => {
+  const { post, close } = await serve(fakeStt(), { llm: chanaLlm });
+  t.after(close);
+  const join = async (lang = "hi") => ((await (await post("/households", { ...signup, cook: { ...signup.cook, lang } })).json()) as { id: string }).id;
+  const say = async (householdId: string) => (await (await post("/calls", { transcript: "ek kilo chana", householdId })).json()) as CallResult;
+  const teach = async (householdId: string) => {
+    const call = await say(householdId);
+    assert.equal((await post(`/actions/${call.actions[0]!.id}/answer`, { option: "Kala Chana" })).status, 200);
+  };
+  const [a, b, c, newcomer, telugu] = [await join(), await join(), await join(), await join(), await join("te")];
+
+  await teach(a);
+  await teach(b);
+  assert.deepEqual((await say(newcomer)).actions.map((x) => x.type), ["question"]);
+
+  await teach(c);
+  const resolved = (await say(newcomer)).actions[0]!;
+  assert.ok(resolved.type === "cart");
+  assert.deepEqual(resolved.cart.lines.map((l) => l.item), ["kala-chana"]);
+  assert.deepEqual((await say(telugu)).actions.map((x) => x.type), ["question"]);
+});

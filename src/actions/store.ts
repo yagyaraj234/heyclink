@@ -232,10 +232,19 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
     voteWord: async (h: Household, word: string, item: string) =>
       void await q(`INSERT INTO word_votes VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (household, word) DO UPDATE SET item = excluded.item, at = excluded.at`, h.id, word, item, h.cook.lang, h.cook.phone ?? null, new Date().toISOString()),
-    /** wordKey → item id: the words this household taught. */
+    /**
+     * wordKey → item id: words at least 3 households of this cook language agree on (90%+ of their votes),
+     * overridden by the words this household taught.
+     * ponytail: scans every vote per call; materialize the agreed words if word_votes grows large.
+     */
     async words(h: Household): Promise<Record<string, string>> {
-      const rows = (await q<{word: string; item: string}>("SELECT word, item FROM word_votes WHERE household = $1", h.id)).rows;
-      return Object.fromEntries(rows.map(r => [r.word, r.item]));
+      const rows = (await q<{word: string; item: string}>(`
+        SELECT word, item, 0 AS own FROM (
+          SELECT word, item, count(*) AS n, sum(count(*)) OVER (PARTITION BY word) AS total
+          FROM word_votes WHERE lang = $2 GROUP BY word, item) agreed
+        WHERE n >= 3 AND n >= 0.9 * total
+        UNION ALL SELECT word, item, 1 FROM word_votes WHERE household = $1 ORDER BY own`, h.id, h.cook.lang)).rows;
+      return Object.fromEntries(rows.map(r => [r.word, r.item])); // the household's own rows come last and win
     },
     saveHousehold: async (h: Household) => void await q("UPDATE households SET data = $1 WHERE id = $2", JSON.stringify(h), h.id),
 
