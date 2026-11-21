@@ -40,6 +40,17 @@ test("buildCart falls back to household brand, then base price for unknown brand
   assert.deepEqual(cart.lines.map((l) => [l.brand, l.price]), [["india-gate", 164], ["xyz", 58], [undefined, 60]]);
 });
 
+test("buildCart prices grams of a per-bunch item as one bunch, not one bunch per gram (meal-plan cook cart)", async () => {
+  const lines: GroceryLine[] = [
+    { raw: "150 g spinach", item: "spinach", qty: 150, unit: "g", confidence: 1 },
+    { raw: "10 g coriander", item: "coriander", qty: 10, unit: "g", confidence: 1 },
+    { raw: "do gaddi palak", item: "spinach", qty: 2, unit: "bunch", confidence: 1 },
+  ];
+  const cart = await buildCart(lines, household());
+  // palak Rs 20 a bunch, coriander Rs 15 a bunch; bunches asked as bunches still count
+  assert.deepEqual(cart.lines.map((l) => l.price), [20, 15, 40]);
+});
+
 test("catalog prices every canonical item id", async () => {
   const lines = items.map((item): GroceryLine => ({ raw: item, item, qty: 1, unit: "packet", confidence: 1 }));
   const cart = await buildCart(lines, household());

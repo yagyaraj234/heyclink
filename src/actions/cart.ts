@@ -17,10 +17,12 @@ const SCALE: Partial<Record<Unit, [dim: string, factor: number]>> = {
   piece: ["n", 1], dozen: ["n", 12],
 };
 
-/** Packs needed. "packet" or a unit that doesn't convert counts qty as packs. */
+/** Packs needed. "packet" or a unit that doesn't convert counts qty as packs, except a weight or volume (no bunch weight to divide by). */
 function packs(qty: number, unit: Unit, entry: CatalogEntry): number {
   const from = SCALE[unit];
   const to = SCALE[entry.unit];
+  // ponytail: "150 g palak" of a per-bunch item = 1 bunch whatever the grams; add grams-per-pack to the catalog if big weights matter.
+  if (from?.[0] === "m" && to?.[0] !== "m") return 1;
   if (unit === "packet" || !from || !to || from[0] !== to[0]) return Math.ceil(qty);
   return Math.ceil((qty * from[1]) / (entry.packSize * to[1]) - 1e-9);
 }
