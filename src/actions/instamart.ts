@@ -73,9 +73,11 @@ function invoice(
   cart: RetailCart,
   intent: InstamartIntent | undefined,
   res: Response,
-  updated = false,
-  staging = false,
-  publish?: (receipt: Omit<GroceryReceipt, "receiptId">) => void,
+  { revisedCart, staging, publish }: {
+    revisedCart?: Cart;
+    staging?: boolean;
+    publish?: (receipt: Omit<GroceryReceipt, "receiptId">) => void;
+  } = {},
 ) {
   const invoiceAddress = cart.selectedAddressDetails?.address ?? cart.selectedAddress;
   if (
@@ -106,7 +108,7 @@ function invoice(
   const details = `<p>Deliver to ${escape(invoiceAddress)}</p><ul>${rows}</ul><ul>${fees}</ul><p><strong>To pay ${escape(cart.billBreakdown.toPay.value)}</strong></p>${warnings.map((w) => `<p>${escape(w)}</p>`).join("")}`;
   const changed = !!s.bill && s.bill !== details;
   s.bill = details;
-  if (updated && !changed && publish) {
+  if (publish && !changed) {
     const eta = [
       ...new Set(
         intent?.items
@@ -123,19 +125,23 @@ function invoice(
       address: invoiceAddress,
       ...(eta && { eta }),
     });
+    if (staging)
+      return void page(res, "Staging review complete", "<p>This cart uses seeded inventory. No payment was taken.</p>");
+    return void res.redirect(303, "https://www.swiggy.com/instamart");
   }
-  if (updated && !changed && staging)
-    return void page(res, "Staging review complete", "<p>This cart uses seeded inventory. No payment was taken.</p>");
-  if (updated && !changed) return void res.redirect(303, "https://www.swiggy.com/instamart");
   if (changed) {
     s.csrf = random();
     res.status(409);
   }
+  const revisedList = revisedCart
+    ? `<h2>Updated household list</h2><ul>${revisedCart.lines.map(l => `<li>${escape(l.item)} · ${escape(l.qty)} ${escape(l.unit)}${l.brand ? ` · ${escape(l.brand)}` : ""}</li>`).join("")}</ul>
+       <h2>Existing Instamart basket</h2><p>Kitchen updated the list after sending these packs to Instamart. Continue if you want to buy the basket below. To buy different packs, use the store links in Kitchen and record the purchase there.</p>`
+    : "";
   page(
     res,
     changed ? "Cart changed. Review again" : "Review your Instamart bill",
-    details +
-      `<p>Open the cart in the same Swiggy account to verify delivery time and pay.</p><form method="post" action="/instamart/continue">${field(s)}<button>Continue to Swiggy</button></form>`,
+    revisedList + details +
+      `<p>Open the cart in the same Swiggy account to verify delivery time and pay.</p><form method="post" action="/instamart/continue">${field(s)}<button>${revisedCart ? "Continue with existing basket" : "Continue to Swiggy"}</button></form>`,
   );
 }
 
@@ -339,13 +345,6 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
     return e.card.cart;
   };
 
-  const samePreparedCart = (s: Session) => {
-    if (store.instamartClaimed(s.cartId) !== revision(currentCart(s)))
-      fail(
-        409,
-        "The household list changed after these packs were sent. Review the updated list in the app and adjust the existing Instamart cart.",
-      );
-  };
   const formSession = (req: Request) => {
     const s = sessionOf(req);
     if (!s || !s.client || s.csrf !== req.body?.csrf) fail(403, "Review session expired. Reopen the cart from the app.");
@@ -370,21 +369,21 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
     res.redirect(303, store.instamartClaimed(s.cartId) ? "/instamart/prepared" : "/instamart/addresses");
   });
   const readForReview = async (s: Session) => {
-    samePreparedCart(s);
     const token = store.beginInstamartReview(s.cartId, s.snapshot);
     const latest = await s.client!.cart();
-    samePreparedCart(s);
+    const local = currentCart(s);
     if (!store.isInstamartReviewCurrent(s.cartId, s.snapshot, token))
       fail(409, "A newer review is open. Review the latest bill.");
-    return { latest, token };
+    const revisedCart = store.instamartClaimed(s.cartId) === s.snapshot ? undefined : local;
+    return { latest, token, revisedCart };
   };
   router.get("/instamart/prepared", async (req, res) => {
     const s = sessionOf(req);
     if (!s?.client || !store.instamartClaimed(s.cartId)) return void res.sendStatus(403);
-    const { latest } = await readForReview(s);
+    const { latest, revisedCart } = await readForReview(s);
     const intent = store.instamartIntent(s.cartId);
     s.address = intent?.address;
-    invoice(s, latest, intent, res);
+    invoice(s, latest, intent, res, { revisedCart });
   });
   router.get("/instamart/addresses", async (req, res) => {
     const s = sessionOf(req);
@@ -492,9 +491,11 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
   router.post("/instamart/continue", async (req, res) => {
     const s = formSession(req);
     if (!s.bill) fail(409, "Review your cart before continuing.");
-    const { latest, token } = await readForReview(s);
-    invoice(s, latest, store.instamartIntent(s.cartId), res, true, config.staging, (receipt) => {
-      store.saveInstamartReceipt(s.cartId, s.snapshot, receipt, token);
+    const { latest, token, revisedCart } = await readForReview(s);
+    invoice(s, latest, store.instamartIntent(s.cartId), res, {
+      revisedCart,
+      staging: config.staging,
+      publish: (receipt) => store.saveInstamartReceipt(s.cartId, s.snapshot, receipt, token),
     });
   });
   return router;

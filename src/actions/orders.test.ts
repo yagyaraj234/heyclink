@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ActionCard, CallResult, Cart } from "../contracts.ts";
 import { openStore } from "./store.ts";
 import type { Store } from "./store.ts";
@@ -72,6 +75,31 @@ test("runDue runs that overlap still check out once", async () => {
   const [a, b] = await Promise.all([first, second]);
   assert.equal(carts.length, 1);
   assert.deepEqual([a.length, b.length], [1, 0]);
+});
+
+test("after restart, interrupted checkouts fail and confirmed orders without a claim still run", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "vfi-order-restart-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "vfi.db");
+  const before = openStore(path);
+  addOrder(before, "interrupted", "2026-11-22T03:00:00.000Z");
+  assert.equal(before.claimOrder("interrupted"), true);
+  before.addAction({
+    householdId: "h1",
+    done: true,
+    card: { id: "now", type: "order", order: { cart, status: "scheduled" }, needsApproval: true },
+  });
+  addOrder(before, "unconfirmed", "2026-11-22T03:00:00.000Z", false);
+
+  const after = openStore(path, { recoverInterruptedOrders: true });
+  const { swiggy, carts } = fakeSwiggy();
+  const placed = await runDue(NOW, after, swiggy);
+  assert.equal(orderOf(after, "interrupted").status, "failed");
+  assert.equal(orderOf(after, "now").status, "placed");
+  assert.equal(orderOf(after, "unconfirmed").status, "scheduled");
+  assert.equal(placed.length, 1);
+  assert.equal(carts.length, 1);
+  assert.deepEqual(await runDue(NOW, after, swiggy), []);
 });
 
 test("a failed checkout marks the order failed and is not retried", async () => {
