@@ -30,7 +30,7 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
    SARVAM_API_KEY=...
    STT_PROVIDER=sarvam   # sarvam | openai | whisper-cpp
    PORT=3000
-   DATABASE_URL=postgres://...   # Neon pooled connection string (-pooler host), sslmode=require
+   DATABASE_URL=postgres://...   # Neon pooled string (-pooler host), with sslmode=verify-full
    # PG_POOL_MAX=5             connections per instance
    # OPENAI_LLM_MODEL=...      optional override
    # WHISPER_CLI=/usr/local/bin/whisper-cli   only for whisper-cpp
