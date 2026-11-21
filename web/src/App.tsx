@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { ActionCard, CallResult, Household } from "../../src/contracts.ts";
 
 const HOUSEHOLD = "h1";
+// The API adds a per-action status to every call (CallResult itself is frozen).
+type ActionStatus = "pending" | "approved" | "answered";
+type Call = CallResult & { status: Record<string, ActionStatus> };
 const rupees = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -14,11 +17,8 @@ const postJson = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 export function App() {
-  const [calls, setCalls] = useState<CallResult[]>([]); // oldest first
+  const [calls, setCalls] = useState<Call[]>([]); // oldest first
   const [household, setHousehold] = useState<Household | null>(null);
-  // Server tracks approved/answered but CallResult doesn't carry it: actionId → "approved" | upiUrl | chosen option.
-  // ponytail: lost on reload; switch to the per-action status map on GET /calls once lane 2 ships it.
-  const [done, setDone] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   // The call in flight: shown at once as Lakshmi's bubble with a spinner, replaced by the real call on reply.
   const [sending, setSending] = useState<{ text: string; t0: number } | null>(null);
@@ -27,7 +27,7 @@ export function App() {
 
   const refreshHousehold = () => api<Household>(`/households/${HOUSEHOLD}`).then(setHousehold);
   const refreshCall = async (callId: string) => {
-    const fresh = await api<CallResult>(`/calls/${callId}`);
+    const fresh = await api<Call>(`/calls/${callId}`);
     setCalls((cs) => cs.map((c) => (c.callId === callId ? fresh : c)));
   };
 
@@ -46,7 +46,7 @@ export function App() {
 
   const load = () =>
     run(async () => {
-      const [list] = await Promise.all([api<CallResult[]>(`/calls?householdId=${HOUSEHOLD}`), refreshHousehold()]);
+      const [list] = await Promise.all([api<Call[]>(`/calls?householdId=${HOUSEHOLD}`), refreshHousehold()]);
       setCalls(list.reverse());
     });
   useEffect(() => void load(), []);
@@ -59,7 +59,7 @@ export function App() {
   const addCall = (text: string, init: RequestInit) => {
     setSending({ text, t0: Date.now() });
     return run(async () => {
-      const call = await api<CallResult>(`/calls?householdId=${HOUSEHOLD}`, { method: "POST", ...init });
+      const call = await api<Call>(`/calls?householdId=${HOUSEHOLD}`, { method: "POST", ...init });
       setCalls((cs) => [...cs, call]);
     });
   };
@@ -73,21 +73,18 @@ export function App() {
 
   const approve = (callId: string, card: ActionCard) =>
     run(async () => {
-      const r = await api<{ upiUrl?: string }>(`/actions/${card.id}/approve`, { method: "POST" });
-      setDone((d) => ({ ...d, [card.id]: r.upiUrl ?? "approved" }));
+      await api(`/actions/${card.id}/approve`, { method: "POST" });
       await Promise.all([refreshCall(callId), refreshHousehold()]);
     });
   const answer = (callId: string, card: ActionCard, option: string) =>
     run(async () => {
       await postJson(`/actions/${card.id}/answer`, { option });
-      setDone((d) => ({ ...d, [card.id]: option }));
       await refreshCall(callId); // the cart card is updated (or created) server-side
     });
 
   const reset = () =>
     run(async () => {
       await api(`/households/${HOUSEHOLD}/reset`, { method: "POST" });
-      setDone({});
       await load();
     });
 
@@ -101,7 +98,7 @@ export function App() {
         <div className="thread" ref={thread}>
           {calls.length === 0 && !sending && <p className="muted center">No calls yet. Record, upload or type a note below.</p>}
           {calls.map((call) => (
-            <Call key={call.callId} call={call} household={household} done={done}
+            <CallView key={call.callId} call={call} household={household}
               onApprove={(c) => approve(call.callId, c)} onAnswer={(c, o) => answer(call.callId, c, o)} />
           ))}
           {sending && <Sending {...sending} />}
@@ -130,10 +127,9 @@ function Sending({ text, t0 }: { text: string; t0: number }) {
   );
 }
 
-function Call({ call, household, done, onApprove, onAnswer }: {
-  call: CallResult;
+function CallView({ call, household, onApprove, onAnswer }: {
+  call: Call;
   household: Household | null;
-  done: Record<string, string>;
   onApprove: (card: ActionCard) => void;
   onAnswer: (card: ActionCard, option: string) => void;
 }) {
@@ -149,7 +145,7 @@ function Call({ call, household, done, onApprove, onAnswer }: {
           <ul className="notes">{call.extraction.notes.map((n, i) => <li key={i}>📝 {n}</li>)}</ul>
         )}
         {call.actions.map((card) => (
-          <Card key={card.id} card={card} limit={household?.approvalLimit} done={done[card.id]}
+          <Card key={card.id} card={card} limit={household?.approvalLimit} status={call.status[card.id]}
             onApprove={() => onApprove(card)} onAnswer={(o) => onAnswer(card, o)} />
         ))}
         <span className="chip" title="agent response latency">
@@ -160,13 +156,14 @@ function Call({ call, household, done, onApprove, onAnswer }: {
   );
 }
 
-function Card({ card, limit, done, onApprove, onAnswer }: {
+function Card({ card, limit, status, onApprove, onAnswer }: {
   card: ActionCard;
   limit: number | undefined;
-  done: string | undefined;
+  status: ActionStatus | undefined;
   onApprove: () => void;
   onAnswer: (option: string) => void;
 }) {
+  const done = status !== undefined && status !== "pending";
   if (card.type === "cart") {
     const { cart } = card;
     return (
@@ -191,19 +188,18 @@ function Card({ card, limit, done, onApprove, onAnswer }: {
             {card.needsApproval ? "needs approval" : "within limit"}{limit !== undefined && ` (${rupees(limit)})`}
           </span>
           {cart.checkoutUrl && <a href={cart.checkoutUrl} target="_blank" rel="noreferrer">checkout</a>}
-          <button onClick={onApprove} disabled={!!done}>{done ? "Approved ✓" : "Approve"}</button>
+          <button onClick={onApprove} disabled={done}>{done ? "Approved ✓" : "Approve"}</button>
         </div>
       </div>
     );
   }
   if (card.type === "advance") {
-    const upi = done && done !== "approved" ? done : card.upiUrl;
     return (
       <div className="card">
         <h3>Advance {rupees(card.advance.amount)}</h3>
         <p>{card.advance.reason ?? "No reason given"} · to <strong>{card.payee}</strong></p>
         {done ? (
-          upi ? <p><a className="upi" href={upi}>Pay via UPI</a> <code>{upi}</code></p> : <p>Approved ✓</p>
+          card.upiUrl ? <p><a className="upi" href={card.upiUrl}>Pay via UPI</a> <code>{card.upiUrl}</code></p> : <p>Approved ✓</p>
         ) : (
           <button onClick={onApprove}>Approve</button>
         )}
@@ -215,8 +211,9 @@ function Card({ card, limit, done, onApprove, onAnswer }: {
       <h3>❓ {card.text}</h3>
       <div className="options">
         {card.options.map((o) => (
-          <button key={o} onClick={() => onAnswer(o)} disabled={!!done} className={done === o ? "chosen" : ""}>{o}</button>
+          <button key={o} onClick={() => onAnswer(o)} disabled={done}>{o}</button>
         ))}
+        {done && <span className="muted">Answered ✓</span>}
       </div>
     </div>
   );
