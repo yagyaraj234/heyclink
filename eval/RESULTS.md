@@ -47,7 +47,7 @@ No audio yet for 30 gold cases (30 recorded); they are not in this table.
 | te-06f702d8 | pipeline (STT) | openai mishears మళ్ళీ→బల్లి and drops the line; sarvam is exact. |
 | te-3cdd5b59 | brand slugs | gold `slurp-firm` vs pred `slurrp-farm`/`slurfm`: brand slugs aren't canonical, so the brand metric is noisy. |
 | hi-1a282af2 | **draft questionable** | a replace intent again: the 5 packets are the triphala replacement, not the chana. Also kala-chana vs kabuli-chana from whisper. |
-| te-5430e654 | **extraction** | a price query ("…ధర ఎంత") gets extracted as a 0.5 kg raisins order by every provider. |
+| te-5430e654 | **draft wrong** | a price query ("…ధర ఎంత") that names a quantity. The labeling rules say it still produces a line, so the pipeline's 0.5 kg raisins (bb-royal) is right and the empty draft is wrong. |
 | hi-08eeb3eb | **extraction** | "chizzpa potato chips" maps to `cheese` (openai/plain+harness). It should be dropped as unknown. |
 | hi-c5ad6286 | **extraction** | harness drops the brand `henko` that plain mode keeps (sarvam), and whisper gives `hanko` (not fuzzy-matched). |
 
