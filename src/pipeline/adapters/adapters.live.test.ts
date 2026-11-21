@@ -9,6 +9,7 @@ import { processTranscript } from "../process.ts";
 import { openaiLlm } from "./openai-llm.ts";
 import { sarvamStt } from "./sarvam-stt.ts";
 import { openaiStt } from "./openai-stt.ts";
+import { whisperCppStt } from "./whisper-cpp-stt.ts";
 
 const skip = !process.env.LIVE;
 const wav = fileURLToPath(new URL("../samples/hi_bigbasket_1.wav", import.meta.url)); // "मैं दस पैकेट डाबर अश्वगंधा टैबलेट्स ख़रीदना चाहता हूँ"
@@ -33,4 +34,11 @@ test("openai-stt: Hindi bigbasket clip", { skip }, async () => {
   assert.equal(t.lang, "hi");
   assert.equal(t.provider, "openai");
   assert.match(t.text, /अश्वगंधा/);
+});
+
+test("whisper-cpp-stt: Hindi bigbasket clip", { skip }, async () => {
+  const t = await whisperCppStt().transcribe(wav, { lang: "hi", keywords });
+  assert.equal(t.lang, "hi");
+  assert.equal(t.provider, "whisper-cpp");
+  assert.match(t.text, /डाबर/);
 });
