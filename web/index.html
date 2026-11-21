@@ -8,7 +8,7 @@
       :root { --bg: #f6f5f2; --panel: #fff; --ink: #1d1d1b; --muted: #77756f; --line: #e3e1db; --accent: #0b6e4f; --warn: #b45309; --cook: #fff4dc; color-scheme: light; }
       * { box-sizing: border-box; }
       body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-      .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 100vh; }
+      .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 100vh; height: 100dvh; }
       main { display: flex; flex-direction: column; min-height: 0; }
       header { display: flex; align-items: baseline; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
       h1 { font-size: 18px; margin: 0; } h2 { font-size: 16px; margin: 0 0 12px; } h3 { font-size: 14px; margin: 0 0 8px; }
@@ -39,11 +39,16 @@
       .composer .text { flex: 1; min-width: 0; font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
       .mic { width: 44px; height: 44px; border-radius: 50%; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
       .mic.on { background: #c0392b; border-color: #c0392b; animation: pulse 1s infinite; }
+      .chip.pending { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; }
+      .spinner { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      button.small { font-size: 12px; padding: 3px 10px; background: var(--panel); color: var(--accent); }
+      aside > .row { margin-bottom: 12px; } aside > .row h2 { margin: 0; }
       @keyframes pulse { 50% { box-shadow: 0 0 0 6px #c0392b33; } }
       .file { cursor: pointer; font-size: 20px; } .file input { display: none; }
       aside { background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow-y: auto; font-size: 14px; }
       aside ul { margin: 0 0 14px; padding-left: 18px; } dl { margin: 0 0 14px; } dt { font-weight: 600; margin-top: 6px; } dd { margin: 0; }
-      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; height: auto; } main { height: 100vh; } aside { border-left: 0; border-top: 1px solid var(--line); } .bubble { max-width: 90%; } }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; height: auto; } main { height: 100vh; height: 100dvh; } .thread, header, .composer { padding-left: 12px; padding-right: 12px; } .reply { width: 100%; } .card { padding: 10px; } table { font-size: 13px; } aside { border-left: 0; border-top: 1px solid var(--line); } .bubble { max-width: 90%; } }
     </style>
   </head>
   <body>
