@@ -119,8 +119,9 @@ function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
     ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord) ?? resolveTail(l.raw))
     : l.item;
   if (!item || !(ITEMS as string[]).includes(item)) return [];
-  // the spoken word beats the LLM's transliteration of it (हैंको vs "hanco")
-  const brand = harness ? (spokenBrand(l.itemWord) ?? (l.brand ? (spokenBrand(l.brand) ?? l.brand) : undefined)) : l.brand;
+  // the spoken word beats the LLM's transliteration of it (हैंको vs "hanco"); the LLM's slug is matched whole,
+  // never cut to a brand word inside it ("tata-sampann" stays, not tata)
+  const brand = harness ? (spokenBrand(l.itemWord) ?? (l.brand ? (resolveBrand(l.brand) ?? l.brand) : undefined)) : l.brand;
   const q = harness ? normalizeQuantity(l.qtyPhrase) : null;
   const line: GroceryLine = {
     raw: l.raw,

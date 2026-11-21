@@ -396,3 +396,19 @@ test("processCall: harness rejoins an item word STT split in two (కర్వ�
   const want = ["curry-leaves", 500, "g", "fresho"];
   assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit, g.brand]), [want, want]);
 });
+
+test("processCall: harness keeps the LLM's sub-brand slug instead of cutting it to a brand word inside it (tata-sampann ≠ tata)", async () => {
+  // live reply, eval hi-a0db9e12: the brand is only in raw, not in itemWord
+  const { stt } = fakeStt("मेरी शॉपिंग आइटम सूची में पाँच पाउच टाटा सम्पन्न मूंग दाल जोड़ें।", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "पाँच पाउच टाटा सम्पन्न मूंग दाल", requested: true, itemWord: "मूंग दाल", qtyPhrase: "पाँच पाउच", item: "moong-dal", qty: 5, unit: "packet", brand: "tata-sampann", confidence: 0.99 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["moong-dal", "tata-sampann"]]);
+});
