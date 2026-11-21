@@ -134,6 +134,7 @@ test("signed-in cook joins two households and can submit notes only to active me
 
 const liveProject = process.env.FIREBASE_PROJECT_ID;
 const liveToken = process.env.FIREBASE_TEST_ID_TOKEN;
+const liveOwnerToken = process.env.FIREBASE_TEST_OWNER_ID_TOKEN;
 test("Firebase verifies a real mobile ID token", { skip: process.env.LIVE !== "1" || !liveProject || !liveToken }, async (t) => {
   assert.ok(liveProject && liveToken);
   assert.equal(process.env.FIREBASE_AUTH_EMULATOR_HOST, undefined);
@@ -142,8 +143,52 @@ test("Firebase verifies a real mobile ID token", { skip: process.env.LIVE !== "1
   const server = createApp({ store, processCall, stt, llm, auth: { projectId: liveProject, inviteOrigin: "https://kitchen.example" } }).listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => server.close());
-  const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/auth/session`, {
-    headers: { authorization: "Bearer " + liveToken },
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  async function request(path: string, bearer: string, status: number, body?: object) {
+    const response = await fetch(base + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { authorization: "Bearer " + bearer, "content-type": "application/json" },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+    });
+    assert.equal(response.status, status, path);
+    return response;
+  }
+  await request("/auth/session", liveToken, 200);
+
+  await t.test("one cook joins two households and loses access only to the revoked household", {
+    skip: !liveOwnerToken,
+  }, async () => {
+    assert.ok(liveOwnerToken);
+    const homes = [
+      { name: "Rao Test Home", location: "Indiranagar, Bengaluru" },
+      { name: "Sharma Test Home", location: "Koramangala, Bengaluru" },
+    ];
+    const ids = [];
+    for (const home of homes) {
+      const { id } = await (await request("/households", liveOwnerToken, 201, {
+        ...home, owner: { name: "Test Owner" }, cook: cookProfile, approvalLimit: 500,
+      })).json() as { id: string };
+      const { code } = await (await request(`/households/${id}/invites`, liveOwnerToken, 201, {})).json() as { code: string };
+      await request("/join", liveToken, 201, { code });
+      await request("/join", liveToken, 404, { code });
+      ids.push(id);
+    }
+    const list = await (await request("/households", liveToken, 200)).json() as { name: string; location: string; role: string }[];
+    assert.deepEqual(list.map(({ name, location, role }) => ({ name, location, role })),
+      homes.map(home => ({ ...home, role: "cook" })));
+
+    const [first, second] = ids;
+    const note = { transcript: "paanch sau advance" };
+    const firstFeed = `/calls?householdId=${first}`;
+    const secondFeed = `/calls?householdId=${second}`;
+    await request(firstFeed, liveToken, 201, note);
+    await request(secondFeed, liveToken, 201, note);
+    const [call] = await (await request(firstFeed, liveOwnerToken, 200)).json() as { actions: { id: string; type: string }[] }[];
+    const advance = call?.actions.find(action => action.type === "advance");
+    assert.ok(advance);
+    await request(`/actions/${advance.id}/approve`, liveToken, 403, {});
+    await request(`/households/${first}/cook/revoke`, liveOwnerToken, 204, {});
+    await request(firstFeed, liveToken, 404);
+    await request(secondFeed, liveToken, 200);
   });
-  assert.equal(res.status, 200, await res.text());
 });
