@@ -15,7 +15,7 @@ import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import type { Swiggy } from "./actions/swiggy.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
-import { cartRevision, manualReceipt, openStore } from "./actions/store.ts";
+import { cartRevision, historyLines, manualReceipt, openStore } from "./actions/store.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
@@ -322,7 +322,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const household = store.household(entry.householdId)!;
       household.history.push({
         at: new Date().toISOString().slice(0, 10),
-        lines: card.cart.lines.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
+        lines: historyLines(manualReceipt(card.cart)),
       });
       store.saveHousehold(household);
     }

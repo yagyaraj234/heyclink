@@ -45,7 +45,7 @@ export function manualReceipt(cart: Cart): GroceryReceipt {
   });
   return { source: "manual", lines, total: `₹${cart.total}`, receiptId: cartRevision(cart) };
 }
-function historyLines(receipt: GroceryReceipt): Household["history"][number]["lines"] {
+export function historyLines(receipt: GroceryReceipt): Household["history"][number]["lines"] {
   return receipt.lines.map(({item,qty,unit,brand}) => ({item,qty,unit,...(brand && {brand})}));
 }
 
