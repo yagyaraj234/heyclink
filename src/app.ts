@@ -10,7 +10,9 @@ import { cartCard, isUnsure } from "./actions/plan.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 
 /** Lane 1's processCall (src/pipeline/process.ts) satisfies this; tests inject it with fake ports. */
-export type ProcessCall = (input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }) => Promise<CallResult>;
+export type ProcessCall = (
+  input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options?: { harness?: boolean },
+) => Promise<CallResult>;
 
 export interface AppDeps {
   processCall: ProcessCall;
@@ -66,6 +68,13 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const household = households.get(householdId);
     if (!household) return void res.status(404).json({ error: `unknown household "${householdId}"` });
     const lang: Lang | undefined = LANGS.find((l) => l === (req.query.lang ?? body.lang));
+    // mode=plain: the base model (no household context, STT keywords or indic pass) for side-by-side demos.
+    const mode = req.query.mode ?? "harness";
+    if (mode !== "harness" && mode !== "plain") return void res.status(400).json({ error: "mode must be harness or plain" });
+    const options = { harness: mode === "harness" };
+    // Plain also forgets household memory, so its cart gets no remembered brands. Cook, UPI and approval limit stay.
+    const ctx: Household = options.harness ? household
+      : { ...household, brands: {}, pantry: {}, history: [], family: { ...household.family, dietRules: [] } };
 
     let result: CallResult;
     if (isAudio) {
@@ -73,7 +82,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const audioPath = join(tmpdir(), `vfi-${randomUUID()}.${extFor(req.get("content-type"))}`);
       await writeFile(audioPath, req.body);
       try {
-        result = await processCall({ audioPath, householdId, lang }, household, { stt, llm });
+        result = await processCall({ audioPath, householdId, lang }, ctx, { stt, llm }, options);
       } finally {
         await rm(audioPath, { force: true });
       }
@@ -84,8 +93,10 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       }
       // Text input reuses the pipeline with an Stt that returns the given transcript; audioPath is unused.
       const textStt: Stt = { transcribe: async () => ({ text, lang: lang ?? household.cook.lang, provider: "fake" }) };
-      result = await processCall({ audioPath: "", householdId, lang }, household, { stt: textStt, llm });
+      result = await processCall({ audioPath: "", householdId, lang }, ctx, { stt: textStt, llm }, options);
     }
+    // Plain results are for comparison only: never stored, so their cards can't be approved.
+    if (!options.harness) return void res.json({ ...result, status: {} });
 
     calls.set(result.callId, result);
     callHousehold.set(result.callId, householdId);
