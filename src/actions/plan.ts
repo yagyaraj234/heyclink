@@ -29,7 +29,8 @@ type Question = Extract<ActionCard, { type: "question" }> & {
 export function groceryPlan(extraction: ExtractionWithAmbiguous, household: Household) {
   const sure = extraction.groceries.filter((l) => !isUnsure(l));
   const cart = priceCart(sure, household);
-  const questions: { card: Question; choices: (GroceryLine | null)[]; heldIndex?: number }[] = [];
+  // word: the spoken word a which-one question settles; its answer teaches the household that word
+  const questions: { card: Question; choices: (GroceryLine | null)[]; heldIndex?: number; word?: string }[] = [];
   const lang = household.cook.lang;
   const skip = lang === "hi" ? "छोड़ें" : lang === "te" ? "వద్దు" : SKIP;
   const yes = lang === "hi" ? "हाँ, जोड़ें" : lang === "te" ? "అవును, చేర్చండి" : "Yes, add it";
@@ -51,6 +52,7 @@ export function groceryPlan(extraction: ExtractionWithAmbiguous, household: Hous
     add(`Which one did ${household.cook.name} mean by "${a.raw}"? (${a.qty} ${a.unit})`, [...options, SKIP],
       [...a.candidates.map(item => ({ raw: a.raw, qty: a.qty, unit: a.unit, item, confidence: 1 })), null],
       lang === "te" ? `“${a.raw}” అంటే ఏది?` : `“${a.raw}” से आपका मतलब कौन सा है?`, [...options, skip]);
+    questions.at(-1)!.word = a.raw;
   }
   for (const held of cart.held) questions.push(quantityQuestion(held, household, sure[held.index]?.brand));
   return { cart, questions };

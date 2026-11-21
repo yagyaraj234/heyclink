@@ -1607,3 +1607,27 @@ test("approving a cart teaches the household its brands; a brand the catalog doe
   assert.equal(h.brands.tea, "tata");
   assert.equal(h.brands.atta, "aashirvaad");
 });
+
+const chanaLlm: Llm = {
+  json: async <T>() => ({
+    groceries: [{ raw: "ek kilo chana", itemWord: "chana", qtyPhrase: "", item: null, candidates: ["kabuli-chana", "kala-chana"], qty: 1, unit: "kg", brand: null, confidence: 0.9 }],
+    advance: null,
+    notes: [],
+  }) as T,
+};
+
+test("answering a which-one question teaches the household that word; the next call skips the question", async (t) => {
+  const { post, close } = await serve(fakeStt(), { llm: chanaLlm });
+  t.after(close);
+  const say = async () => (await (await post("/calls", { transcript: "ek kilo chana", householdId: "h1" })).json()) as CallResult;
+
+  const first = await say();
+  assert.deepEqual(first.actions.map((a) => a.type), ["question"]);
+  assert.equal((await post(`/actions/${first.actions[0]!.id}/answer`, { option: "Kala Chana" })).status, 200);
+
+  const second = await say();
+  assert.deepEqual(second.actions.map((a) => a.type), ["cart"]);
+  const cart = second.actions[0]!;
+  assert.ok(cart.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => l.item), ["kala-chana"]);
+});
