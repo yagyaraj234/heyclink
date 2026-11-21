@@ -10,13 +10,15 @@ import { openaiStt } from "./adapters/openai-stt.ts";
 import { planMeals, weekday } from "./meals.ts";
 
 /** Internal extension, like ExtractionWithAmbiguous: `cookOff` = the YYYY-MM-DD the cook says she won't come. */
-export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string };
+export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string; stockouts?: string[] };
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
   requested?: boolean; // optional in code only: replies recorded before the field existed lack it
   itemWord: string;
   qtyPhrase: string;
+  quantityOmitted?: boolean;
+  stockout?: boolean;
   item: string | null; // null = not in our catalog, or ambiguous (then see candidates)
   candidates?: string[]; // optional in code only, like `requested`
   brand: string | null;
@@ -40,7 +42,7 @@ export const EXTRACTION_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["raw", "requested", "itemWord", "qtyPhrase", "item", "candidates", "qty", "unit", "brand", "confidence"],
+        required: ["raw", "requested", "stockout", "quantityOmitted", "itemWord", "qtyPhrase", "item", "candidates", "qty", "unit", "brand", "confidence"],
         properties: {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
           requested: {
@@ -48,6 +50,8 @@ export const EXTRACTION_SCHEMA = {
             description: "false only when the item is merely named while describing cooking steps (e.g. 'phir usmein nimbu daala'); true for any shopping mention: asking for it, saying it was/should be bought or ordered, past tense included (le aana, chahiye, mangaya, mangwana), or asking its price or availability",
           },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
+          stockout: { type: "boolean", description: "The cook says this item has actually run out, e.g. pyaaz khatam ho gaya. A stockout implies a request to restock." },
+          quantityOmitted: { type: "boolean", description: "True only if the cook gave no amount. A spoken but unclear amount is not omitted." },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
           item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the product is not in the catalog. A product whose name merely contains a catalog word is not that item: 'cheez-pa potato chips', 'kaju katli', 'chocolate ice cream' → null; never split one product name into several lines" },
           candidates: {
@@ -78,13 +82,13 @@ export const EXTRACTION_SCHEMA = {
   },
 } as const;
 
-const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telugu) into a grocery order for their employer.
+const SYSTEM = `You turn a household cook's voice note (English, Hindi, Hinglish or Telugu) into a grocery order for their employer.
 - One grocery line per item requested. "item" must be one of the allowed ids.
 - qty/unit: the spoken quantity as a number and unit. Never 0: for a vague amount ("thoda", "thoda sa", "kuch") use one usual pack or bunch.
 - brand: only when said, or when the cook means the usual one ("wahi wala", "same as last time", "jo hamesha aata hai") — then use the household's preferred brand for that item. Otherwise null.
 - confidence: 0..1, how sure you are of item AND quantity. Below 0.6 when either is a guess (vague "thoda", "woh wala" with no known preference, garbled words); the employer is then asked to confirm.
 - advance: money the cook asks for themselves (salary advance), in INR. null if none.
-- notes: anything else worth telling the employer that is not a purchase, verbatim and short (e.g. "kal 8 baje aaungi"). Mentions that something is running low without asking to buy it go in notes, not groceries.`;
+- notes: anything else worth telling the employer that is not a purchase, verbatim and short (e.g. "kal 8 baje aaungi"). Report a household stockout as a grocery request even without an explicit request to buy. Keep meal questions in notes so the household can answer.`;
 
 const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen." +
   "\n- item is the generic product, never null for a branded catalog item: Tata Tea→tea, Surf Excel→detergent-powder, Vim bar→dishwash-bar, Amul doodh→milk; brand is the brand alone (tata, surf-excel, vim, amul)." +
@@ -192,11 +196,26 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
     schema: EXTRACTION_SCHEMA,
     schemaName: "extraction",
   });
-  const lines = out.groceries.map((l) => toLine(l, harness, known));
+  const stockouts = new Set<string>();
+  const lines = out.groceries.map((source) => {
+    const line = toLine(source, harness, known);
+    if (!line || "candidates" in line) return line;
+    if (source.stockout) stockouts.add(line.item);
+    if (!harness || !source.quantityOmitted || source.qtyPhrase.trim()) return line;
+    const previous = household.history.flatMap(order => order.lines).findLast(bought => bought.item === line.item);
+    if (previous && previous.qty > 0 &&
+        !(previous.unit === "kg" && previous.qty > 2) && !(previous.unit === "g" && previous.qty > 2000)) {
+      return { ...line, qty: previous.qty, unit: previous.unit, interpretation: "Quantity unspecified. Suggested the last household purchase." };
+    }
+    const pack = catalog[line.item];
+    if (!pack) return line;
+    return { ...line, qty: pack.packSize, unit: pack.unit, interpretation: "Quantity unspecified. Suggested one catalog pack." };
+  });
   const extraction: PipelineExtraction = {
     groceries: lines.filter((l): l is GroceryLine => l !== undefined && !("candidates" in l)),
     notes: out.notes,
   };
+  if (stockouts.size) extraction.stockouts = [...stockouts];
   const ambiguous = lines.filter((l): l is Ambiguous => l !== undefined && "candidates" in l);
   if (ambiguous.length) extraction.ambiguous = ambiguous;
   // trust boundary: planMeals needs a real calendar date
