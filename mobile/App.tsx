@@ -9,7 +9,7 @@ import { OwnerAlerts, useCartNotification, type Tracking } from "./OwnerAlerts.t
 import { CartReview, PackLines, type ReviewCart } from "./CartReview.tsx";
 import { API, ApiError, api, postJson, rupees } from "./api.ts";
 import { authEnabled, firebase, inviteCode } from "./auth.ts";
-import { JoinKitchen, ManageInvite, SignIn } from "./HouseholdAuth.tsx";
+import { JoinKitchen, ManageGroceryAccounts, ManageInvite, SignIn } from "./HouseholdAuth.tsx";
 import type { Kitchen } from "./HouseholdAuth.tsx";
 import type { User } from "@react-native-firebase/auth";
 import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder } from "expo-audio";
@@ -61,7 +61,7 @@ function AccountApp() {
 function HouseholdAccount({ user, pendingInvite, clearInvite }: { user: User; pendingInvite?: string; clearInvite: () => void }) {
   const [kitchens, setKitchens] = useState<Kitchen[]>();
   const [selectedId, setSelectedId] = useState<string>();
-  const [screen, setScreen] = useState<"create" | "join" | "invite" | "account" | "recover">();
+  const [screen, setScreen] = useState<"create" | "join" | "invite" | "account" | "recover" | "grocery">();
   const [instamartAvailable, setInstamartAvailable] = useState(false);
   const [error, setError] = useState("");
   const [legacy, setLegacy] = useState<OwnerSession>();
@@ -114,6 +114,8 @@ function HouseholdAccount({ user, pendingInvite, clearInvite }: { user: User; pe
   if (pendingInvite || screen === "join") return <JoinKitchen key={pendingInvite ?? "scan"} initialCode={pendingInvite} onBack={closeJoin}
     onJoin={list => { setKitchens(list); setSelectedId(undefined); closeJoin(); }} />;
   if (screen === "account") return <SignIn user={user} onLinked={() => setScreen(undefined)} onBack={() => setScreen(undefined)} />;
+  if (screen === "grocery" && kitchen?.role === "owner")
+    return <ManageGroceryAccounts key={kitchen.id} kitchen={kitchen} onBack={() => setScreen(undefined)} />;
   if (screen === "invite" && kitchen?.role === "owner") return <ManageInvite kitchen={kitchen} onBack={() => setScreen(undefined)} />;
   if (screen === "recover" && legacy) return <RecoverKitchen saved={legacy} onBack={() => setScreen(undefined)} onDone={async () => {
     created(legacy.id);
@@ -134,7 +136,8 @@ function HouseholdAccount({ user, pendingInvite, clearInvite }: { user: User; pe
       {kitchen.role === "owner" && <Pressable accessibilityRole="button" onPress={() => setScreen("invite")}><Text style={s.link}>Cook access</Text></Pressable>}
     </View>
     {kitchen.role === "owner"
-      ? <Owner key={`${kitchen.id}:${alert?.requestId ?? ""}`} alert={alert?.cartId ?? ""} householdId={kitchen.id} instamartAvailable={instamartAvailable} />
+      ? <Owner key={`${kitchen.id}:${alert?.requestId ?? ""}`} alert={alert?.cartId ?? ""} householdId={kitchen.id}
+          instamartAvailable={instamartAvailable} onGroceryAccounts={() => setScreen("grocery")} />
       : <Cook key={kitchen.id} householdId={kitchen.id} lang={kitchen.lang} onAccessLost={() => {
           setSelectedId(undefined);
           refresh();
@@ -583,7 +586,9 @@ function Cook({ householdId, lang, onAccessLost }: { householdId: string; lang: 
 
 // ---- Owner: poll the calls and act on cards ---------------------------------
 
-function Owner({ householdId, ownerToken, instamartAvailable, alert }: { householdId: string; alert: string; ownerToken?: string; instamartAvailable?: boolean }) {
+function Owner({ householdId, ownerToken, instamartAvailable, alert, onGroceryAccounts }: {
+  householdId: string; alert: string; ownerToken?: string; instamartAvailable?: boolean; onGroceryAccounts?: () => void;
+}) {
   const [calls, setCalls] = useState<Call[]>([]); // newest first, as the server returns them
   const [errors, setErrors] = useState<Record<string, string>>({}); // card id (or "feed") → message
   const [busy, setBusy] = useState<string | null>(null);
@@ -664,6 +669,9 @@ function Owner({ householdId, ownerToken, instamartAvailable, alert }: { househo
       {alertCard && renderCard(alertCard, fromCall?.status[alert], fromCall?.tracking?.[alert], true, pendingQuestions(fromCall))}
       {fromLoose && renderCard(fromLoose.card, fromLoose.status, fromLoose.tracking, true)}
       <OwnerAlerts householdId={householdId} ownerToken={ownerToken} />
+      {onGroceryAccounts && <Pressable accessibilityRole="button" onPress={onGroceryAccounts}>
+        <Text style={s.link}>Grocery accounts</Text>
+      </Pressable>}
       <Pressable style={[s.btn, s.planBtn, planning && s.disabled]} disabled={planning} onPress={planTomorrow}>
         <Text style={s.btnText}>{planning ? "Planning…" : "🍽 Plan tomorrow"}</Text>
       </Pressable>
