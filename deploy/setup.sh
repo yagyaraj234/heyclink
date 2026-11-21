@@ -24,6 +24,9 @@ if [[ $mode == setup ]]; then
     printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
     [[ -z ${SARVAM_API_KEY:-} ]] || printf 'SARVAM_API_KEY=%s\n' "$SARVAM_API_KEY"
     printf 'STT_PROVIDER=%s\nPORT=3000\n' "$stt"
+    for key in INSTAMART_PUBLIC_ORIGIN INSTAMART_CLIENT_ID INSTAMART_STAGING EXPO_ACCESS_TOKEN; do
+      [[ -z ${!key:-} ]] || printf '%s=%s\n' "$key" "${!key}"
+    done
     [[ -z ${OPENAI_LLM_MODEL:-} ]] || printf 'OPENAI_LLM_MODEL=%s\n' "$OPENAI_LLM_MODEL"
   } | base64 | tr -d '\n')
 fi
