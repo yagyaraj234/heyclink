@@ -2,6 +2,8 @@
 
 One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serves the API and `web/dist` from the same origin, so CORS doesn't matter.
 
+**One command** (after step 1, from your machine with SSH access): `set -a; . ./.env; set +a; deploy/setup.sh <static-ip>` does steps 2–6 and is safe to rerun. `deploy/setup.sh <static-ip> redeploy` pulls main, rebuilds web and restarts. The manual steps below are what it runs.
+
 1. **Instance.** Create an Ubuntu 24.04 instance with at least 1 GB RAM and attach a static IP. Open TCP **80 and 443** under Networking → IPv4 firewall (443 is closed by default, and Caddy's certificate challenge needs 80). Point your hostname's A record at the static IP, or use `<ip-with-dashes>.sslip.io`.
 
 2. **Node 26 and pnpm.**
