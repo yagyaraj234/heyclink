@@ -194,3 +194,24 @@ test("processCall: no brand said → cart uses the household's preferred brand, 
   assert.ok(cart.type === "cart");
   assert.deepEqual(cart.cart.lines.map((l) => [l.item, l.brand]), [["milk", "amul"], ["curd", undefined]]);
 });
+
+test("processCall: kishmish / kismis / किशमिश all land on raisins, and the LLM is told so", async () => {
+  const { stt } = fakeStt("sau gram kishmish, sau gram kismis, sau gram किशमिश", "hi");
+  // run-to-run drift: the model sometimes picks grapes or gives up on the dried fruit
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "sau gram kishmish", itemWord: "kishmish", qtyPhrase: "sau gram", item: "grapes", qty: 100, unit: "g", brand: null, confidence: 0.9 },
+      { raw: "sau gram kismis", itemWord: "kismis", qtyPhrase: "sau gram", item: null, qty: 100, unit: "g", brand: null, confidence: 0.9 },
+      { raw: "sau gram किशमिश", itemWord: "किशमिश", qtyPhrase: "sau gram", item: "grapes", qty: 100, unit: "g", brand: null, confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => g.item), ["raisins", "raisins", "raisins"]);
+  const told = calls[0]!.system + JSON.stringify(calls[0]!.schema);
+  for (const spoken of ["kishmish", "kismis", "किशमिश", "किसमिस"]) assert.ok(told.includes(spoken), spoken);
+  assert.match(told, /raisins/);
+});
