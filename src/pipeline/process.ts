@@ -105,7 +105,11 @@ function resolveTail(itemWord: string): string | null {
 }
 
 function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
-  const item = harness ? (resolveItem(l.itemWord) ?? l.item ?? resolveTail(l.itemWord)) : l.item;
+  // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
+  const branded = harness && spokenBrand(l.itemWord) !== undefined;
+  const item = harness
+    ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord))
+    : l.item;
   if (!item || !(ITEMS as string[]).includes(item)) return [];
   const brand = harness ? (l.brand ? (spokenBrand(l.brand) ?? l.brand) : spokenBrand(l.itemWord)) : l.brand;
   const q = harness ? normalizeQuantity(l.qtyPhrase) : null;

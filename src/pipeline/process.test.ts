@@ -215,3 +215,20 @@ test("processCall: kishmish / kismis / किशमिश all land on raisins, a
   for (const spoken of ["kishmish", "kismis", "किशमिश", "किसमिस"]) assert.ok(told.includes(spoken), spoken);
   assert.match(told, /raisins/);
 });
+
+test("processCall: brand word in front of the item overrides a wrong LLM item (Amul doodh ≠ butter, Tata Tea ≠ salt)", async () => {
+  const { stt } = fakeStt("ek packet Amul doodh aur aadha kilo Tata Tea", "hi");
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "ek packet Amul doodh", itemWord: "Amul doodh", qtyPhrase: "ek packet", item: "butter", qty: 1, unit: "packet", brand: "amul", confidence: 0.9 },
+      { raw: "aadha kilo Tata Tea", itemWord: "Tata Tea", qtyPhrase: "aadha kilo", item: "salt", qty: 0.5, unit: "kg", brand: "tata", confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["milk", "amul"], ["tea", "tata"]]);
+  assert.match(calls[0]!.system, /Tata Tea→tea/);
+});
