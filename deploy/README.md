@@ -40,7 +40,7 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
    ```sh
    sudo cp deploy/vfi.service /etc/systemd/system/
    sudo systemctl daemon-reload && sudo systemctl enable --now vfi
-   curl -s localhost:3000/households/h1 | head -c 80
+   curl -s localhost:3000/health   # {"ok":true,"stt":"sarvam","llm":"..."}
    ```
 
 6. **Caddy.**
@@ -48,7 +48,7 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
    sudo apt-get install -y caddy
    sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # then edit the hostname
    sudo systemctl reload caddy
-   curl -s https://<host>/households/h1 | head -c 80
+   curl -s https://<host>/health
    ```
 
 **Update:** `cd /opt/vfi && sudo -u vfi git pull && sudo -u vfi pnpm install --prod --frozen-lockfile && sudo -u vfi pnpm --dir web install --frozen-lockfile && sudo -u vfi pnpm --dir web build && sudo systemctl restart vfi`.

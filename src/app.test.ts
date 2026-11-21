@@ -284,3 +284,12 @@ test("GET /calls and /calls/:id carry a per-action status map that survives relo
   const list = (await (await fetch(`${base}/calls?householdId=h1`)).json()) as WithStatus[];
   assert.deepEqual(list[0]!.status, want);
 });
+
+test("GET /health names the STT provider and LLM model and nothing else", async (t) => {
+  const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, health: { stt: "sarvam", llm: "gpt-test" } }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/health`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, stt: "sarvam", llm: "gpt-test" });
+});
