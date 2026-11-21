@@ -43,7 +43,17 @@ export const MEAL_SCHEMA = obj({
 const SYSTEM = `You plan one day of Indian home meals for a family: breakfast, lunch and dinner, twice.
 - cook: dishes the household cook makes at home.
 - order: dishes to order from a restaurant instead.
-- Follow every diet rule. Macros are per serving.`;
+- Follow every diet rule and the diet type (veg: no meat, fish or egg; egg: veg plus eggs). Macros are per serving.
+- Aim to hit the daily protein and fiber targets across the three meals; for a "lose" goal keep meals light (lower kcal, less oil).`;
+
+function householdBrief(h: Household): string {
+  const g = h.goals;
+  return [
+    `Family: ${h.family.headcount} people`,
+    `Diet rules: ${h.family.dietRules.join("; ") || "none"}`,
+    g && `Diet: ${g.diet}. Goal: ${g.goal}${g.proteinG ? `, ${g.proteinG} g protein per person per day` : ""}`,
+  ].filter(Boolean).join("\n");
+}
 
 function weekday(date: string): Weekday {
   return WEEKDAYS[new Date(`${date}T00:00:00Z`).getUTCDay()]!; // UTC: the date is a calendar day, not an instant
@@ -81,7 +91,7 @@ export async function planMeals(household: Household, date: string, ports: { llm
   const day = weekday(date);
   const out = await ports.llm.json<LlmPlan>({
     system: SYSTEM,
-    user: `Date: ${date} (${DAY_NAMES[day]})`,
+    user: `${householdBrief(household)}\nDate: ${date} (${DAY_NAMES[day]})`,
     schema: MEAL_SCHEMA,
     schemaName: "meal_plan",
   });

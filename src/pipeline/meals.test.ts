@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Household, Llm } from "../contracts.ts";
 import household from "../../fixtures/household.json" with { type: "json" };
+import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { planMeals } from "./meals.ts";
 
 const h = household as Household;
@@ -71,4 +72,22 @@ test("planMeals: the cook cart holds the dishes' ingredients minus pantry items 
   assert.ok(plan.cook.cart.lines.every((l) => l.price > 0));
   assert.equal(plan.cook.cart.lines.find((l) => l.item === "atta")?.brand, "aashirvaad");
   assert.deepEqual(Object.keys(plan.cook.meals[1]!).sort(), ["dish", "macros", "slot", "steps"]);
+});
+
+test("planMeals: diet rules, goals and headcount reach the LLM; ingredients are catalog ids", async () => {
+  const hh: Household = { ...h, goals: { goal: "lose", diet: "veg", proteinG: 90 } };
+  const { llm, calls } = fakeLlm();
+
+  await planMeals(hh, SUNDAY, { llm });
+
+  const prompt = calls[0]!.system + "\n" + calls[0]!.user;
+  assert.match(prompt, /no onion on Tuesdays/);
+  assert.match(prompt, /papa diabetic: low sugar/);
+  assert.match(prompt, /\bveg\b/);
+  assert.match(prompt, /90 ?g protein/);
+  assert.match(prompt, /light/i);
+  assert.match(prompt, /protein and fiber/);
+  assert.match(prompt, /4 people/);
+  const schema = calls[0]!.schema as any; // any: walking a JSON schema literal
+  assert.deepEqual(schema.properties.cook.properties.meals.items.properties.ingredients.items.properties.item.enum, ITEMS);
 });
