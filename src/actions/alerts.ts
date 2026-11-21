@@ -1,41 +1,51 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Query, Tx } from "./store.ts";
 
 export type Push = (token: string, cartId: string, kind: "ready" | "reminder") => Promise<void>;
 
-export function openAlerts(db: DatabaseSync) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS owner_devices (household TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL);
-    CREATE TABLE IF NOT EXISTS cart_alerts (
-      cart TEXT NOT NULL, kind TEXT NOT NULL, household TEXT NOT NULL, due INTEGER NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (cart, kind)
-    );
-  `);
+// due is epoch ms, so bigint.
+export const ALERTS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS owner_devices (household text PRIMARY KEY, token text UNIQUE NOT NULL);
+  CREATE TABLE IF NOT EXISTS cart_alerts (
+    cart text NOT NULL, kind text NOT NULL, household text NOT NULL, due bigint NOT NULL,
+    attempts integer NOT NULL DEFAULT 0, sent boolean NOT NULL DEFAULT false, PRIMARY KEY (cart, kind)
+  );
+`;
+
+// An undone cart with lines; "ready" alerts only for cook-sent carts.
+const ALERTABLE = `NOT (a.data::jsonb ->> 'done')::boolean AND jsonb_array_length(a.data::jsonb #> '{card,cart,lines}') > 0
+  AND (c.kind <> 'ready' OR a.call IS NOT NULL)`;
+
+export function openAlerts(q: Query, tx: Tx) {
   return {
-    hasDevice(household: string) {
-      return !!db.prepare("SELECT 1 FROM owner_devices WHERE household=?").get(household);
+    async hasDevice(household: string) {
+      return !!(await q("SELECT 1 FROM owner_devices WHERE household = $1", household)).rowCount;
     },
-    register(household: string, token: string) {
-      db.prepare("INSERT OR REPLACE INTO owner_devices VALUES (?,?)").run(household, token);
-    },
-    queue(household: string, cart: string, kind: "ready" | "reminder", due: number) {
-      db.prepare("INSERT OR IGNORE INTO cart_alerts (cart,kind,household,due) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM owner_devices WHERE household=?)")
-        .run(cart, kind, household, due, household);
+    /** One device per household and one household per device: the newest registration wins. */
+    register: (household: string, token: string) => tx(async () => {
+      await q("DELETE FROM owner_devices WHERE household = $1 OR token = $2", household, token);
+      await q("INSERT INTO owner_devices VALUES ($1, $2)", household, token);
+    }),
+    async queue(household: string, cart: string, kind: "ready" | "reminder", due: number) {
+      await q(`INSERT INTO cart_alerts (cart, kind, household, due) SELECT $1::text, $2::text, $3::text, $4::bigint
+        WHERE EXISTS (SELECT 1 FROM owner_devices WHERE household = $3::text) ON CONFLICT DO NOTHING`, cart, kind, household, due);
     },
     async deliver(now: number, push: Push) {
-      const rows = db.prepare(`SELECT c.*, d.token FROM cart_alerts c JOIN owner_devices d USING(household)
-        JOIN actions a ON a.id=c.cart WHERE sent=0 AND due<=? AND NOT (a.data ->> '$.done') AND json_array_length(a.data,'$.card.cart.lines') > 0 AND (c.kind <> 'ready' OR a.call IS NOT NULL)
-        ORDER BY due LIMIT 50`).all(now) as {cart:string; kind:"ready"|"reminder"; token:string; attempts:number}[];
+      const rows = (await q<{cart: string; kind: "ready" | "reminder"; token: string; attempts: number}>(`
+        SELECT c.cart, c.kind, c.attempts, d.token FROM cart_alerts c JOIN owner_devices d USING (household)
+        JOIN actions a ON a.id = c.cart WHERE NOT c.sent AND c.due <= $1 AND ${ALERTABLE}
+        ORDER BY c.due LIMIT 50`, now)).rows;
       for (const row of rows) {
-        // Lease before network I/O, including across restarts. Transient failures back off.
+        // Lease before network I/O, including across restarts and instances. Transient failures back off.
         const next = now + Math.min(3600_000, 60_000 * 2 ** Math.min(row.attempts, 6));
-        if (!db.prepare("UPDATE cart_alerts SET due=?, attempts=attempts+1 WHERE cart=? AND kind=? AND sent=0 AND due<=? AND EXISTS (SELECT 1 FROM actions WHERE id=cart AND NOT (data ->> '$.done') AND json_array_length(data,'$.card.cart.lines') > 0 AND (cart_alerts.kind <> 'ready' OR actions.call IS NOT NULL))")
-          .run(next, row.cart, row.kind, now).changes) continue;
+        if (!(await q(`UPDATE cart_alerts c SET due = $1, attempts = attempts + 1
+            WHERE cart = $2 AND kind = $3 AND NOT sent AND due <= $4
+            AND EXISTS (SELECT 1 FROM actions a WHERE a.id = c.cart AND ${ALERTABLE})`, next, row.cart, row.kind, now)).rowCount) continue;
         try {
           await push(row.token, row.cart, row.kind);
-          db.prepare("UPDATE cart_alerts SET sent=1 WHERE cart=? AND kind=?").run(row.cart, row.kind);
+          await q("UPDATE cart_alerts SET sent = true WHERE cart = $1 AND kind = $2", row.cart, row.kind);
         } catch (err) {
           if (err instanceof Error && err.message === "DeviceNotRegistered") {
-            db.prepare("DELETE FROM owner_devices WHERE token=?").run(row.token);
+            await q("DELETE FROM owner_devices WHERE token = $1", row.token);
           } else console.warn("Cart notification delivery failed");
         }
       }

@@ -128,7 +128,7 @@ export function purchasedQuantity(lines: Pick<GroceryLine, "qty" | "unit">[]) {
   return { qty: qty / (SCALE[first.unit]?.[1] ?? 1), unit: first.unit };
 }
 
-/** Validate the stored quantities and prices again before approving or placing old SQLite carts. */
+/** Validate the stored quantities and prices again before approving or placing stored carts. */
 export function matchesHouseholdBill(cart: Cart): boolean {
   const latest = priceCart(requestsFromCart(cart), { brands: {} });
   return !!latest.lines.length && !latest.held.length && latest.total === cart.total &&

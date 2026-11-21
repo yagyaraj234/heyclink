@@ -9,8 +9,8 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
   const { card } = entry;
   if (card.type !== "order") throw new Error(`action ${card.id} is not an order`);
   // claim before the await, so an overlapping run (or a second approve) skips this order
-  if (!store.claimOrder(card.id)) {
-    const current = store.action(card.id);
+  if (!(await store.claimOrder(card.id))) {
+    const current = await store.action(card.id);
     if (current?.card.type !== "order") throw new Error("Order no longer exists");
     return current.card.order;
   }
@@ -22,14 +22,14 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
     console.error(`order ${card.id} failed:`, err);
     card.order = { ...card.order, status: "failed" };
   }
-  store.finishOrder(entry);
+  await store.finishOrder(entry);
   return card.order;
 }
 
 /** Places confirmed orders due now. server.ts runs it every 60 s. */
 export async function runDue(now: Date, store: Store, swiggy: Swiggy, push?: Push): Promise<Order[]> {
   const [orders] = await Promise.all([
-    Promise.all(store.dueOrders(now.toISOString()).map((e) => placeOrder(e, store, swiggy))),
+    Promise.all((await store.dueOrders(now.toISOString())).map((e) => placeOrder(e, store, swiggy))),
     push && store.alerts.deliver(now.getTime(), push),
   ]);
   return orders;
