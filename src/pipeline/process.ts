@@ -92,10 +92,11 @@ const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telug
 
 const HARNESS_RULES = "\n- Quantity words: paav=0.25, aadha=0.5, dedh=1.5, dhai=2.5, saade X=X+0.5; gaddi=bunch, darjan=dozen." +
   "\n- item is the generic product, never null for a branded catalog item: Tata Tea→tea, Surf Excel→detergent-powder, Vim bar→dishwash-bar, Amul doodh→milk; brand is the brand alone (tata, surf-excel, vim, amul)." +
-  "\n- Spelling variants are one id: kishmish/kismis/किशमिश/किसमिस→raisins.";
+  "\n- Spelling variants are one id: kishmish/kismis/किशमिश/किसमिस→raisins." +
+  "\n- References to earlier notes or orders ('wahi jo subah bola tha', 'woh daal', 'same as last time', 'aur ek') resolve from recentNotes (the household's latest voice notes, newest first) and recentOrders: use that item, and its brand and quantity unless new ones are said.";
 
-function householdContext(h: Household) {
-  return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history, dietRules: h.family.dietRules });
+function householdContext(h: Household, recent: RecentCall[]) {
+  return JSON.stringify({ preferredBrands: h.brands, pantry: h.pantry, recentOrders: h.history, recentNotes: recent, dietRules: h.family.dietRules });
 }
 
 export function sttKeywords(h: Household): string[] {
@@ -171,11 +172,17 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine |
 /** harness: false = eval baseline (plain LLM: no household context, no STT keywords, no indic pass). */
 export interface PipelineOptions {
   harness?: boolean;
+  recent?: RecentCall[]; // the household's last few calls, newest first; harness only
+}
+export interface RecentCall {
+  at: string;
+  transcript: string;
+  lines: Pick<GroceryLine, "item" | "qty" | "unit" | "brand">[];
 }
 
-export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true }: PipelineOptions = {}): Promise<PipelineExtraction> {
-  const context = harness ? `Household: ${householdContext(household)}\n` : "";
-  const known = new Set(harness ? household.history.flatMap((o) => o.lines.map((l) => l.item)) : []);
+export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [] }: PipelineOptions = {}): Promise<PipelineExtraction> {
+  const context = harness ? `Household: ${householdContext(household, recent)}\n` : "";
+  const known = new Set(harness ? [...household.history, ...recent].flatMap((o) => o.lines.map((l) => l.item)) : []);
   const out = await ports.llm.json<LlmExtraction>({
     system: harness ? SYSTEM + HARNESS_RULES : SYSTEM,
     user: `${context}Language hint: ${lang}\nVoice note: ${text}`,
