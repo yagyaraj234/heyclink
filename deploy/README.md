@@ -19,8 +19,8 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
    sudo useradd --system --home /opt/vfi --shell /usr/sbin/nologin vfi
    sudo git clone https://github.com/yagyaraj234/voice-for-india /opt/vfi
    cd /opt/vfi
-   sudo pnpm install --prod --frozen-lockfile
-   sudo pnpm --dir web install --frozen-lockfile && sudo pnpm --dir web build   # → web/dist, served by Node (needs web devDeps)
+   sudo pnpm install --frozen-lockfile --filter . --filter voice-for-india-web   # server + web; skips mobile/
+   sudo pnpm --filter voice-for-india-web build   # → web/dist, served by Node
    sudo chown -R vfi:vfi /opt/vfi
    ```
 
@@ -53,7 +53,7 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
    curl -s https://<host>/health
    ```
 
-**Update:** `cd /opt/vfi && sudo -u vfi git pull && sudo -u vfi pnpm install --prod --frozen-lockfile && sudo -u vfi pnpm --dir web install --frozen-lockfile && sudo -u vfi pnpm --dir web build && sudo systemctl restart vfi`.
+**Update:** `cd /opt/vfi && sudo -u vfi git pull && sudo -u vfi pnpm install --frozen-lockfile --filter . --filter voice-for-india-web && sudo -u vfi pnpm --filter voice-for-india-web build && sudo systemctl restart vfi`.
 **Logs:** `journalctl -u vfi -f`, `journalctl -u caddy -f`.
 
 **whisper-cpp (optional, offline STT).** Build whisper.cpp (`cmake -B build && cmake --build build -j`), copy `build/bin/whisper-cli` to `/usr/local/bin`, and download a ggml model. A 1 GB instance is too small for large-v3-turbo, so use a smaller model or a bigger box. whisper-cli may not read browser webm unless it was built with ffmpeg. Sarvam and OpenAI both accept webm directly.

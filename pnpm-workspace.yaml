@@ -1,0 +1,5 @@
+packages:
+  - web
+  - mobile
+# Expo's bundler needs a flat node_modules; pnpm's default symlinked layout breaks it.
+nodeLinker: hoisted
