@@ -1,10 +1,10 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LANGS } from "./contracts.ts";
+import { DIETS, GOALS, LANGS, WEEKDAYS } from "./contracts.ts";
 import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
@@ -32,9 +32,46 @@ const extFor = (contentType = "") => {
   return /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 };
 
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I: codes get read out loud
+
+// Signup body is client input: rebuild it field by field so nothing unvalidated reaches the household.
+type Signup = Pick<Household, "owner" | "cook" | "goals" | "family" | "brands" | "approvalLimit">;
+const str = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
+const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+const oneOf = <T extends string>(list: readonly T[], v: unknown): v is T => list.includes(v as T);
+function parseSignup(body: unknown): Signup | string {
+  const { owner, cook, approvalLimit, brands = {}, goals, headcount = 1 } = (body ?? {}) as Record<string, any>; // any: unchecked JSON, narrowed below
+  if (!str(owner?.name) || !str(owner?.phone)) return "owner needs name and phone";
+  if (!str(cook?.name) || !oneOf(LANGS, cook?.lang) || !str(cook?.upiId) || !num(cook?.monthlySalary)) {
+    return `cook needs name, lang (${LANGS.join("|")}), upiId and monthlySalary`;
+  }
+  if (cook.phone !== undefined && !str(cook.phone)) return "cook.phone must be a string";
+  if (cook.offDays !== undefined && !(Array.isArray(cook.offDays) && cook.offDays.every((d: unknown) => oneOf(WEEKDAYS, d)))) {
+    return `cook.offDays must be a list of ${WEEKDAYS.join("|")}`;
+  }
+  if (!num(approvalLimit)) return "approvalLimit must be a number ≥ 0";
+  if (!brands || typeof brands !== "object" || !Object.values(brands).every(str)) return "brands must map item → brand";
+  if (goals !== undefined && !(oneOf(GOALS, goals?.goal) && oneOf(DIETS, goals?.diet) && (goals.proteinG === undefined || num(goals.proteinG)))) {
+    return `goals needs goal (${GOALS.join("|")}), diet (${DIETS.join("|")}) and optional proteinG`;
+  }
+  if (!Number.isInteger(headcount) || headcount < 1) return "headcount must be a whole number ≥ 1";
+  return {
+    owner: { name: owner.name, phone: owner.phone },
+    cook: {
+      name: cook.name, lang: cook.lang, upiId: cook.upiId, monthlySalary: cook.monthlySalary,
+      ...(cook.phone && { phone: cook.phone }), ...(cook.offDays && { offDays: cook.offDays }),
+    },
+    ...(goals && { goals: { goal: goals.goal, diet: goals.diet, ...(goals.proteinG !== undefined && { proteinG: goals.proteinG }) } }),
+    family: { headcount, dietRules: [] },
+    brands: { ...brands },
+    approvalLimit,
+  };
+}
+
 export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" } }: AppDeps) {
   // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
+  const codes = new Map<string, string>(); // cook join code → householdId
   const calls = new Map<string, CallResult>();
   const callHousehold = new Map<string, string>(); // callId → householdId; CallResult doesn't carry it
   const callAt = new Map<string, string>(); // callId → ISO time it was stored
@@ -190,6 +227,25 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       actions.set(fresh.id, { card: fresh, callId: entry.callId, householdId: entry.householdId, done: false, lines });
     }
     res.json({ status: "answered", cart: cartEntry?.card ?? fresh });
+  });
+
+  app.post("/households", (req, res) => {
+    const parsed = parseSignup(req.body);
+    if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
+    const id = randomUUID();
+    let cookCode: string;
+    do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
+    while (codes.has(cookCode));
+    households.set(id, { id, ...parsed, pantry: {}, platform: "mock", history: [] });
+    codes.set(cookCode, id);
+    res.status(201).json({ id, cookCode });
+  });
+
+  app.post("/join", (req, res) => {
+    const householdId = codes.get(String(req.body?.code ?? "").trim().toUpperCase());
+    const household = householdId && households.get(householdId);
+    if (!household) return void res.status(404).json({ error: "unknown code" });
+    res.json({ householdId, role: "cook", cook: { name: household.cook.name, lang: household.cook.lang } });
   });
 
   app.get("/households/:id", (req, res) => {

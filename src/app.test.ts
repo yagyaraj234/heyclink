@@ -417,3 +417,69 @@ test("POST /calls hands processCall the household's last 5 calls as recent conte
   assert.deepEqual((seen.at(-1) as { transcript: string }[]).map((r) => r.transcript),
     ["doosri baar: woh wala chana bhi", "call 3", "call 4", "call 5", "call 6"]);
 });
+
+const signup = {
+  owner: { name: "Priya", phone: "+919800000001" },
+  cook: { name: "Sunita", lang: "hi", upiId: "sunita@okicici", monthlySalary: 10000, offDays: ["sun"] },
+  approvalLimit: 1500,
+  brands: { atta: "aashirvaad" },
+  goals: { goal: "lose", diet: "veg", proteinG: 90 },
+};
+
+test("POST /households signs up an owner and cook; the cook joins with the code and can send calls", async (t) => {
+  const { base, post, close } = await serve();
+  t.after(close);
+
+  const res = await post("/households", signup);
+  assert.equal(res.status, 201);
+  const { id, cookCode } = (await res.json()) as { id: string; cookCode: string };
+  assert.match(cookCode, /^[A-Z0-9]{6}$/);
+
+  const h = (await (await fetch(`${base}/households/${id}`)).json()) as Household;
+  assert.deepEqual(h, {
+    id,
+    owner: { name: "Priya", phone: "+919800000001" },
+    cook: { name: "Sunita", lang: "hi", upiId: "sunita@okicici", monthlySalary: 10000, offDays: ["sun"] },
+    goals: { goal: "lose", diet: "veg", proteinG: 90 },
+    family: { headcount: 1, dietRules: [] },
+    brands: { atta: "aashirvaad" },
+    pantry: {},
+    platform: "mock",
+    approvalLimit: 1500,
+    history: [],
+  });
+
+  const join = await post("/join", { code: ` ${cookCode.toLowerCase()} ` });
+  assert.equal(join.status, 200);
+  assert.deepEqual(await join.json(), { householdId: id, role: "cook", cook: { name: "Sunita", lang: "hi" } });
+  assert.equal((await post("/join", { code: "ZZZZZZ" })).status, 404);
+
+  const call = await post("/calls", { transcript: case01.transcript, householdId: id });
+  assert.equal(call.status, 201);
+  // case01 gold brands: aashirvaad (wahi wala) and amul (said out loud); coriander has none
+  const [cart] = ((await call.json()) as CallResult).actions;
+  assert.ok(cart?.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => [l.item, l.brand]), [["atta", "aashirvaad"], ["coriander", undefined], ["milk", "amul"]]);
+  assert.equal(((await (await fetch(`${base}/calls?householdId=${id}`)).json()) as unknown[]).length, 1);
+});
+
+test("POST /households rejects bad input with 400", async (t) => {
+  const { post, close } = await serve();
+  t.after(close);
+  const bad: [why: string, body: unknown][] = [
+    ["no body", {}],
+    ["no owner", { ...signup, owner: undefined }],
+    ["owner without phone", { ...signup, owner: { name: "Priya" } }],
+    ["no cook", { ...signup, cook: undefined }],
+    ["cook without upiId", { ...signup, cook: { ...signup.cook, upiId: "" } }],
+    ["unknown lang", { ...signup, cook: { ...signup.cook, lang: "fr" } }],
+    ["salary as text", { ...signup, cook: { ...signup.cook, monthlySalary: "10000" } }],
+    ["bad off day", { ...signup, cook: { ...signup.cook, offDays: ["sunday"] } }],
+    ["negative limit", { ...signup, approvalLimit: -1 }],
+    ["no limit", { ...signup, approvalLimit: undefined }],
+    ["brand not a string", { ...signup, brands: { atta: 1 } }],
+    ["unknown goal", { ...signup, goals: { goal: "bulk", diet: "veg" } }],
+    ["unknown diet", { ...signup, goals: { goal: "lose", diet: "vegan" } }],
+  ];
+  for (const [why, body] of bad) assert.equal((await post("/households", body)).status, 400, why);
+});
