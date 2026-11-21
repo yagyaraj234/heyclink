@@ -169,10 +169,10 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
     claimInstamartState: async (id: string, value: string, until: number) =>
       (await q("INSERT INTO instamart_state VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET value = excluded.value, until = excluded.until WHERE instamart_state.until <= $4",
         id, value, until, Date.now())).rowCount === 1,
-    /** Deletes the row and returns its live value, so only one taker on any instance gets it. Also clears expired rows. */
-    takeInstamartState: async (id: string) => {
+    /** Deletes the row (only if it still holds `value`, when given) and returns its value, so one taker on any instance gets it. Also clears expired rows. */
+    takeInstamartState: async (id: string, value?: string) => {
       await q("DELETE FROM instamart_state WHERE until <= $1", Date.now());
-      return (await q<{value: string}>("DELETE FROM instamart_state WHERE id = $1 RETURNING value", id)).rows[0]?.value;
+      return (await q<{value: string}>("DELETE FROM instamart_state WHERE id = $1 AND ($2::text IS NULL OR value = $2) RETURNING value", id, value ?? null)).rows[0]?.value;
     },
     // Keep the claim after an upstream timeout: a repeat could add the same packs twice.
     claimInstamart: async (cart: string, revision: string, intent?: InstamartIntent) =>
