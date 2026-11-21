@@ -85,20 +85,30 @@ function Cook() {
     }
   };
 
+  // Refs, not state: a quick tap can release before prepare finishes, and stop must see that.
+  const held = useRef(false);
+  const startedAt = useRef(0);
   const start = async () => {
+    held.current = true;
     setError(null);
     try {
       await recorder.prepareToRecordAsync();
+      if (!held.current) return; // released while preparing; don't leave the mic on
       recorder.record();
+      startedAt.current = Date.now();
       setRecording(true);
     } catch (e) {
       setError((e as Error).message);
     }
   };
   const stop = async () => {
-    if (!recording) return;
+    held.current = false;
+    if (!startedAt.current) return;
+    const ms = Date.now() - startedAt.current;
+    startedAt.current = 0;
     setRecording(false);
     await recorder.stop();
+    if (ms < 500) return setError("थोड़ा देर तक दबाकर रखें");
     if (!recorder.uri) return setError("रिकॉर्डिंग नहीं मिली");
     // The server takes the raw bytes; audio/mp4 maps to .m4a for the STT provider.
     const blob = await (await fetch(recorder.uri)).blob();
