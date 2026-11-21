@@ -633,3 +633,14 @@ test("GET /households/:id/actions lists cards outside any call, newest first, wi
 
   assert.equal((await fetch(`${base}/households/nope/actions`)).status, 404);
 });
+
+test("household signup gives only the owner a private connection credential", async (t) => {
+  const { post, base, close } = await serve();
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  assert.match(owner.ownerToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(owner.instamartAvailable, false);
+  const cook = await (await post("/join", { code: owner.cookCode })).json();
+  const publicHouse = await (await fetch(base + "/households/" + owner.id)).json();
+  assert.ok(!("ownerToken" in cook) && !("ownerToken" in publicHouse));
+});
