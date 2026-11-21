@@ -4,9 +4,11 @@ import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
+import { catalog } from "../actions/cart.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
+  requested?: boolean; // optional in code only: replies recorded before the field existed lack it
   itemWord: string;
   qtyPhrase: string;
   item: string | null; // null = not in our catalog
@@ -30,9 +32,13 @@ export const EXTRACTION_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["raw", "itemWord", "qtyPhrase", "item", "qty", "unit", "brand", "confidence"],
+        required: ["raw", "requested", "itemWord", "qtyPhrase", "item", "qty", "unit", "brand", "confidence"],
         properties: {
           raw: { type: "string", description: "span as heard, e.g. 'do kilo pyaaz'" },
+          requested: {
+            type: "boolean",
+            description: "false only when the item is merely named while describing cooking steps (e.g. 'phir usmein nimbu daala'); true for any shopping mention: asking for it, saying it was/should be bought or ordered, past tense included (le aana, chahiye, mangaya, mangwana), or asking its price or availability",
+          },
           itemWord: { type: "string", description: "the item word exactly as spoken, e.g. 'pyaaz'" },
           qtyPhrase: { type: "string", description: "the quantity words exactly as spoken, e.g. 'dedh kilo'" },
           item: { ...nullable("string"), enum: [...ITEMS, null], description: "catalog id; null if the item is not in the catalog" },
@@ -60,7 +66,7 @@ export const EXTRACTION_SCHEMA = {
 
 const SYSTEM = `You turn a household cook's voice note (Hindi, Hinglish or Telugu) into a grocery order for their employer.
 - One grocery line per item requested. "item" must be one of the allowed ids.
-- qty/unit: the spoken quantity as a number and unit.
+- qty/unit: the spoken quantity as a number and unit. Never 0: for a vague amount ("thoda", "thoda sa", "kuch") use one usual pack or bunch.
 - brand: only when said, or when the cook means the usual one ("wahi wala", "same as last time", "jo hamesha aata hai") — then use the household's preferred brand for that item. Otherwise null.
 - confidence: 0..1, how sure you are of item AND quantity. Below 0.6 when either is a guess (vague "thoda", "woh wala" with no known preference, garbled words); the employer is then asked to confirm.
 - advance: money the cook asks for themselves (salary advance), in INR. null if none.
@@ -105,6 +111,7 @@ function resolveTail(itemWord: string): string | null {
 }
 
 function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
+  if (l.requested === false) return [];
   // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
   const branded = harness && spokenBrand(l.itemWord) !== undefined;
   const item = harness
@@ -120,6 +127,13 @@ function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
     unit: q?.unit ?? l.unit,
     confidence: l.confidence,
   };
+  if (!(line.qty > 0)) {
+    // vague amount ("thoda sa palak") came back as 0: offer one pack and ask (planActions asks below 0.6)
+    const pack = catalog[item];
+    line.qty = pack?.packSize ?? 1;
+    line.unit = pack?.unit ?? "packet";
+    line.confidence = Math.min(line.confidence, 0.5);
+  }
   if (brand) line.brand = brand.trim().toLowerCase().replace(/\s+/g, "-");
   return [line];
 }

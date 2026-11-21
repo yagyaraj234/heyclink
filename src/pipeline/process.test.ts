@@ -4,6 +4,7 @@ import type { Household, Lang, Llm, Stt } from "../contracts.ts";
 import household from "../../fixtures/household.json" with { type: "json" };
 import case01 from "../../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import case02 from "../../fixtures/cases/cook-hinglish-02.json" with { type: "json" };
+import cooking01 from "../../fixtures/cases/indicvoices-hi-cooking-01.json" with { type: "json" };
 import { processCall } from "./process.ts";
 import { sarvamStt } from "./adapters/sarvam-stt.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
@@ -231,4 +232,49 @@ test("processCall: brand word in front of the item overrides a wrong LLM item (A
 
   assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["milk", "amul"], ["tea", "tata"]]);
   assert.match(calls[0]!.system, /Tata Tea→tea/);
+});
+
+test("processCall: an ingredient named while narrating a recipe is not bought (cooking-01: नींबू)", async () => {
+  const { stt } = fakeStt(cooking01.transcript, cooking01.lang);
+  // live reply shape (2026-11-21): lemon came back at 0.72 and went into the cart
+  const { llm, calls } = fakeLlm({
+    groceries: [
+      { raw: "एक किलो दूध", requested: true, itemWord: "दूध", qtyPhrase: "एक किलो", item: "milk", qty: 1, unit: "kg", brand: null, confidence: 1 },
+      { raw: "नींबू", requested: false, itemWord: "नींबू", qtyPhrase: "", item: "lemon", qty: 1, unit: "piece", brand: null, confidence: 0.72 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction, cooking01.gold);
+  // strict structured outputs: the model must always answer whether the line was asked for
+  assert.match(JSON.stringify(calls[0]!.schema), /"required":\["raw","requested"/);
+  // a price/availability question is still shopping (te-bigbasket-01 "... kismis dhara entha"), only narration is dropped
+  assert.match(JSON.stringify(calls[0]!.schema), /false only[^"]*cooking[^"]*price/i);
+});
+
+test("processCall: vague 'thoda sa palak' with qty 0 becomes a one-bunch question, never a 0 g ₹0 line", async () => {
+  const { stt } = fakeStt("Didi thoda sa palak le aana aur do kilo aloo", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "thoda sa palak", requested: true, itemWord: "palak", qtyPhrase: "thoda sa", item: "spinach", qty: 0, unit: "g", brand: null, confidence: 0.7 },
+      { raw: "do kilo aloo", requested: true, itemWord: "aloo", qtyPhrase: "do kilo", item: "potato", qty: 2, unit: "kg", brand: null, confidence: 1 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  const palak = res.extraction.groceries[0]!;
+  assert.deepEqual([palak.item, palak.qty, palak.unit], ["spinach", 1, "bunch"]);
+  const cart = res.actions[0]!;
+  assert.ok(cart.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => l.item), ["potato"]);
+  const question = res.actions.find((a) => a.type === "question");
+  assert.ok(question?.type === "question");
+  assert.match(question.text, /1 bunch Palak/);
+  assert.doesNotMatch(question.text, /\b0 /);
 });
