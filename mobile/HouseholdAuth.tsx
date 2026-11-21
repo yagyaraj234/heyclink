@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Linking, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { encode } from "uqr";
 import type { User } from "@react-native-firebase/auth";
 import type { Lang } from "../src/contracts.ts";
-import { api, postJson } from "./api.ts";
+import { ApiError, api, postJson } from "./api.ts";
 import { authError, inviteCode, requestPhoneCode, signInWithGoogle } from "./auth.ts";
 
 export type Kitchen = { id: string; name: string; location: string; lang: Lang; role: "owner" | "cook" };
@@ -219,7 +219,91 @@ export function ManageInvite({ kitchen, onBack }: { kitchen: Kitchen; onBack: ()
   </ScrollView>;
 }
 
+const groceryRetailers = [
+  { id: "instamart", name: "Instamart", url: "https://www.swiggy.com/instamart" },
+  { id: "zepto", name: "Zepto", url: "https://www.zepto.com/" },
+  { id: "blinkit", name: "Blinkit", url: "https://blinkit.com/" },
+] as const;
+type GroceryRetailer = (typeof groceryRetailers)[number];
+type GroceryStatus = "available" | "connected" | "reconnect";
+type GroceryStatuses = Partial<Record<GroceryRetailer["id"], GroceryStatus | "unavailable" | "error">>;
+
+export function ManageGroceryAccounts({ kitchen, onBack }: { kitchen: Kitchen; onBack: () => void }) {
+  const [statuses, setStatuses] = useState<GroceryStatuses>({});
+  const [busy, setBusy] = useState<GroceryRetailer["id"]>();
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const path = `/households/${encodeURIComponent(kitchen.id)}/grocery-accounts/`;
+
+  useEffect(() => {
+    let active = true;
+    for (const { id } of groceryRetailers) {
+      if (id === "blinkit") continue;
+      void api<{ status: GroceryStatus }>(path + id)
+        .then(({ status }) => status)
+        .catch((e: unknown) => e instanceof ApiError && e.status === 404 ? "unavailable" as const : "error" as const)
+        .then(status => { if (active) setStatuses(previous => ({ ...previous, [id]: status })); });
+    }
+    const subscription = AppState.addEventListener("change", state => {
+      if (state === "active") setRefresh(value => value + 1);
+    });
+    return () => { active = false; subscription.remove(); };
+  }, [path, refresh]);
+
+  async function run(retailer: GroceryRetailer, action: () => Promise<unknown>) {
+    setBusy(retailer.id);
+    setError("");
+    try {
+      await action();
+    } catch {
+      setError(`Could not update ${retailer.name}. Try again.`);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  return <ScrollView contentContainerStyle={styles.form}>
+    <Text accessibilityRole="header" style={styles.title}>Grocery accounts</Text>
+    <Text style={styles.detail}>{kitchen.name}</Text>
+    {groceryRetailers.map(retailer => {
+      const { id, name, url } = retailer;
+      const status = id === "blinkit" ? "unavailable" : statuses[id];
+      const statusLabel = {
+        available: "Ready to connect", connected: "Connected", reconnect: "Sign in again",
+        unavailable: "Account linking unavailable", error: "Could not load connection",
+      };
+      return <View key={id} style={styles.retailer}>
+        <Text accessibilityRole="header" style={styles.label}>{name}</Text>
+        <Text accessibilityLiveRegion="polite" style={styles.detail}>{status ? statusLabel[status] : "Checking connection…"}</Text>
+        {(status === "connected" || status === "reconnect") && <Button secondary label={`Disconnect ${name}`} disabled={!!busy}
+          onPress={() => Alert.alert(`Disconnect ${name}?`, "This removes saved account access for this household.", [
+            { text: "Cancel", style: "cancel" },
+            { text: "Disconnect", style: "destructive", onPress: () => void run(retailer, async () => {
+              await api(path + id, { method: "DELETE" });
+              setStatuses(previous => ({ ...previous, [id]: "available" }));
+              setRefresh(value => value + 1);
+            }) },
+          ])} />}
+        {(status === "available" || status === "reconnect") && <Button
+          label={status === "reconnect" ? `Reconnect ${name}` : `Connect ${name}`} disabled={!!busy}
+          onPress={() => void run(retailer, async () => {
+            const response = await postJson<{ url: string }>(path + id, {});
+            await Linking.openURL(response.url);
+          })} />}
+        {status === "unavailable" && <Button secondary label={`Open ${name}`} disabled={!!busy}
+          onPress={() => void run(retailer, () => Linking.openURL(url))} />}
+        {status === "error" && <Button secondary label={`Retry ${name}`} disabled={!!busy}
+          onPress={() => setRefresh(value => value + 1)} />}
+        {busy === id && <ActivityIndicator accessibilityLabel={`Updating ${name}`} />}
+      </View>;
+    })}
+    {error !== "" && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
+    <Button secondary label="Back" onPress={onBack} />
+  </ScrollView>;
+}
+
 const styles = StyleSheet.create({
+  retailer: { backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: "#e4e0d6", padding: 12, gap: 8 },
   form: { padding: 24, paddingBottom: 40, gap: 13 },
   title: { fontSize: 25, fontWeight: "700", color: "#22251e" },
   label: { color: "#45483f", fontWeight: "600" },
