@@ -30,6 +30,8 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
    SARVAM_API_KEY=...
    STT_PROVIDER=sarvam   # sarvam | openai | whisper-cpp
    PORT=3000
+   DATABASE_URL=postgres://...   # Neon pooled connection string (-pooler host), sslmode=require
+   # PG_POOL_MAX=5             connections per instance
    # OPENAI_LLM_MODEL=...      optional override
    # WHISPER_CLI=/usr/local/bin/whisper-cli   only for whisper-cpp
    # WHISPER_MODEL=/opt/models/ggml-large-v3-turbo-q5_0.bin
@@ -58,7 +60,7 @@ One box: Caddy terminates HTTPS on :443 and proxies to Node on :3000. Node serve
 
 **whisper-cpp (optional, offline STT).** Build whisper.cpp (`cmake -B build && cmake --build build -j`), copy `build/bin/whisper-cli` to `/usr/local/bin`, and download a ggml model. A 1 GB instance is too small for large-v3-turbo, so use a smaller model or a bigger box. whisper-cli may not read browser webm unless it was built with ffmpeg. Sarvam and OpenAI both accept webm directly.
 
-Households, calls, approved quantities, delivery records and reminders live in SQLite at `$DATA_DIR/vfi.db`. The default directory is `.data` under the server working directory. Keep this directory on persistent storage.
+Households, calls, approved quantities, delivery records and reminders live in Postgres at `DATABASE_URL` (Neon). The instance keeps no data, so it can be deleted or scaled out. The server creates its tables on startup.
 
 ### Grocery pilot
 
