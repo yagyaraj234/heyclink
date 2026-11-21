@@ -95,7 +95,7 @@ test("POST /calls with a transcript returns cards; approving them pays and updat
   assert.deepEqual(h.history[1]?.lines, [
     { item: "atta", qty: 2, unit: "kg", brand: "aashirvaad" },
     { item: "coriander", qty: 2, unit: "bunch" },
-    { item: "milk", qty: 1, unit: "packet", brand: "amul" },
+    { item: "milk", qty: 500, unit: "ml", brand: "amul" },
   ]);
 });
 
@@ -1206,6 +1206,24 @@ test("confirmed household history uses the purchased pack, even when the cook re
   });
   assert.equal((await purchase()).status, 200);
   assert.equal((await purchase()).status, 200);
+  const household = await (await fetch(base + "/households/" + owner.id)).json();
+  assert.deepEqual(household.history.map((entry: Household["history"][number]) => entry.lines), [
+    [{item:"onion", qty:500, unit:"g"}]
+  ]);
+});
+
+test("approving a cart records the pack it prices, like ordering or tracking it", async t => {
+  const llm = llmReplying({notes: [], groceries: [{raw:"300 g onion", item:"onion", qty:300, unit:"g", confidence:1}]});
+  const {post, base, close} = await serve(fakeStt(), {llm});
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  const call = await (await post("/calls", {householdId:owner.id, transcript:"300 g onion"})).json();
+  const card = call.actions[0];
+  const approved = await fetch(base + "/actions/" + card.id + "/approve", {
+    method:"POST", headers:{"content-type":"application/json", authorization:"Bearer " + owner.ownerToken},
+    body: JSON.stringify({reviewId:card.cart.reviewId})
+  });
+  assert.equal(approved.status, 200);
   const household = await (await fetch(base + "/households/" + owner.id)).json();
   assert.deepEqual(household.history.map((entry: Household["history"][number]) => entry.lines), [
     [{item:"onion", qty:500, unit:"g"}]
