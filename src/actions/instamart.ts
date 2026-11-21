@@ -11,7 +11,7 @@ import type { Instamart, RetailCart } from "./instamart-client.ts";
 import { packOption, checkedItems, sameGrocery } from "./instamart-packs.ts";
 import type { PickedPack } from "./instamart-packs.ts";
 
-export interface InstamartConfig {
+export interface RetailerConfig {
   origin: string;
   clientId?: string;
   network?: typeof fetch;
@@ -19,16 +19,16 @@ export interface InstamartConfig {
   credentialKey?: Buffer;
 }
 const random = () => randomBytes(32).toString("base64url");
-const CALLBACK = "/instamart/callback";
-const lease = (s: Ticket) => "lease " + s.householdId;
+const lease = (s: CartTicket) => "lease " + s.householdId;
 
-interface Ticket {
-  cartId: string;
+type CartRef = { cartId: string; snapshot: string };
+type Ticket = {
   householdId: string;
-  snapshot: string;
   until: number;
   key: string; // base64 key for this household’s sealed provider credential
-}
+  connection?: string;
+} & (CartRef | { cartId?: undefined; snapshot?: undefined });
+type CartTicket = Ticket & CartRef;
 interface Credential {
   access_token: string;
   refresh_token?: string;
@@ -46,8 +46,7 @@ function unseal<T>(key: Buffer, value: string): T {
   reader.setAuthTag(bytes.subarray(12, 28));
   return JSON.parse(Buffer.concat([reader.update(bytes.subarray(28)), reader.final()]).toString("utf8"));
 }
-interface Session extends Ticket {
-  cookie: string; // not stored: the row is found by its hash and sealed with a key derived from it
+type BrowserState = {
   state: string;
   verifier: string;
   csrf: string;
@@ -57,7 +56,10 @@ interface Session extends Ticket {
   options?: PickedPack[][];
   local?: string;
   bill?: string;
-}
+};
+// The cookie is not stored. It identifies and decrypts the browser state.
+type Session = Ticket & BrowserState & { cookie: string };
+type CartSession = Session & CartRef & { token: string };
 // Tickets and sessions live in instamart_state, so any instance can serve the next step. The database
 // sees only a hash of each browser secret and a payload sealed with a key derived from that secret.
 const rowKey = (secret: string) => createHmac("sha256", secret).update("instamart state v1").digest();
@@ -74,7 +76,7 @@ function fail(status: number, message: string): never {
 }
 
 async function invoice(
-  s: Session,
+  s: CartSession,
   cart: RetailCart,
   intent: InstamartIntent | undefined,
   res: Response,
@@ -161,17 +163,26 @@ function page(res: Response, title: string, body: string) {
 <main><h1>${title}</h1>${body}</main></html>`);
 }
 
-export function instamartRouter(config: InstamartConfig, store: Store, isAuthenticatedOwner?: (req: Request) => boolean) {
+export function retailerRouter(retailer: "instamart" | "zepto", config: RetailerConfig, store: Store, isAuthenticatedOwner?: (req: Request) => boolean) {
+  const zepto = retailer === "zepto";
+  const name = zepto ? "Zepto" : "Instamart";
+  const prefix = "/" + retailer;
+  const callback = prefix + "/callback";
+  const openPath = prefix + "/open";
+  const cookieName = retailer + "_session";
   if (isAuthenticatedOwner && config.credentialKey?.length !== 32) {
     throw new Error("INSTAMART_CREDENTIAL_KEY must be a 32-byte hex key when Firebase auth is enabled.");
   }
-  const rowId = (secret: string) => createHash("sha256").update(config.credentialKey ? "firebase:" + secret : secret).digest("base64url");
+  const rowId = (secret: string) => createHash("sha256")
+    .update(zepto ? "zepto:" + secret : config.credentialKey ? "firebase:" + secret : secret).digest("base64url");
   const { origin } = config;
-  const provider = swiggyOrigin(config.staging);
+  const provider = zepto ? "https://auth.zepto.co.in" : swiggyOrigin(config.staging);
+  const resource = "https://mcp.zepto.co.in";
   const host = new URL(origin);
   let registration: Promise<string> | undefined;
   async function getClientId(): Promise<string> {
     if (config.clientId) return config.clientId;
+    if (zepto) fail(503, "Zepto sign-in needs an approved OAuth client.");
     registration ??= (async () => {
       // Every instance must use one client id: the token exchange may land on a different instance than authorize.
       const id = "client " + provider + " " + origin;
@@ -184,7 +195,7 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           client_name: "Household Kitchen",
-          redirect_uris: [origin + CALLBACK],
+          redirect_uris: [origin + callback],
           token_endpoint_auth_method: "none",
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
@@ -221,59 +232,97 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
   }
   const saveSession = async ({ cookie, ...s }: Session) =>
     store.saveInstamartState(rowId(cookie), seal(rowKey(cookie), s), s.until);
+  const sessionCookie = new RegExp(`(?:^|;\\s*)${cookieName}=([\\w-]{43})(?:;|$)`);
   const sessionOf = async (req: Request): Promise<Session | undefined> => {
-    const cookie = /(?:^|;\s*)instamart_session=([\w-]{43})(?:;|$)/.exec(req.get("cookie") ?? "")?.[1];
-    const sealed = cookie && (await store.instamartState(rowId(cookie)));
-    return sealed ? { ...unseal<Omit<Session, "cookie">>(rowKey(cookie), sealed), cookie } : undefined;
+    const cookie = sessionCookie.exec(req.get("cookie") ?? "")?.[1];
+    if (!cookie) return;
+    const sealed = await store.instamartState(rowId(cookie));
+    return sealed ? { ...unseal<Ticket & BrowserState>(rowKey(cookie), sealed), cookie } : undefined;
   };
+  const cartSessionOf = async (req: Request): Promise<CartSession | undefined> => {
+    const s = await sessionOf(req);
+    if (s?.cartId === undefined || !s.token) return;
+    const link = await store.retailerLink(linkId(s.householdId));
+    if (link?.sealed && link.connection === s.connection) return { ...s, token: s.token };
+  };
+  const keyFor = (householdId: string, ownerAuthorization?: string) =>
+    createHmac("sha256", config.credentialKey ?? ownerAuthorization!)
+      .update("instamart link v1 " + (config.credentialKey ? linkId(householdId) : provider))
+      .digest("base64");
+  async function issueTicket(res: Response, householdId: string, key: string, cart?: CartRef) {
+    const ticket = random();
+    const until = Date.now() + 120_000;
+    const connection = (await store.retailerLink(linkId(householdId)))?.connection;
+    const value = { householdId, key, until, connection, ...cart };
+    await store.saveInstamartState(rowId(ticket), seal(rowKey(ticket), value), until);
+    res.set("cache-control", "no-store").json({ url: origin + openPath + "#" + ticket });
+  }
 
-  router.post("/actions/:id/instamart", async (req, res) => {
+  if (isAuthenticatedOwner) {
+    const accounts = `/households/:id/grocery-accounts/${retailer}` as const;
+    router.get(accounts, async (req, res) => {
+      if (!isAuthenticatedOwner(req)) return void res.sendStatus(403);
+      const link = await store.retailerLink(linkId(req.params.id));
+      const credential = link?.sealed && unseal<Credential>(Buffer.from(keyFor(req.params.id), "base64"), link.sealed);
+      const status = !credential ? "available"
+        : credential.expiresAt > Date.now() || credential.refresh_token ? "connected" : "reconnect";
+      res.json({ status });
+    });
+    router.post(accounts, async (req, res) => {
+      if (!isAuthenticatedOwner(req)) return void res.sendStatus(403);
+      await issueTicket(res, req.params.id, keyFor(req.params.id));
+    });
+    router.delete(accounts, async (req, res) => {
+      if (!isAuthenticatedOwner(req)) return void res.sendStatus(403);
+      await store.disconnectRetailer(linkId(req.params.id), random());
+      res.sendStatus(204);
+    });
+  }
+
+  if (!zepto) router.post("/actions/:id/instamart", async (req, res) => {
     const entry = await store.action(req.params.id);
     if (!entry || !(isAuthenticatedOwner ? isAuthenticatedOwner(req) : await store.isOwner(entry.householdId, req.get("authorization")))) return void res.sendStatus(403);
     if (entry.done || entry.card.type !== "cart" || !entry.card.cart.lines.length)
       return void res.status(409).json({ error: "Review an open grocery cart first" });
     const { reviewId } = entry.card.cart as Cart & { reviewId?: string };
     if (reviewId && req.body?.reviewId !== reviewId) fail(409, "The grocery list changed. Review it again.");
-    const ticket = random();
-    const secret = config.credentialKey ?? req.get("authorization")!;
-    const key = createHmac("sha256", secret)
-      .update("instamart link v1 " + (config.credentialKey ? linkId(entry.householdId) : provider))
-      .digest("base64");
-    const until = Date.now() + 120_000;
-    const value: Ticket = { cartId: entry.card.id, householdId: entry.householdId, snapshot: revision(entry.card.cart), key, until };
-    await store.saveInstamartState(rowId(ticket), seal(rowKey(ticket), value), until);
-    res.set("cache-control", "no-store").json({ url: origin + "/instamart/open#" + ticket });
+    const key = keyFor(entry.householdId, req.get("authorization"));
+    await issueTicket(res, entry.householdId, key, { cartId: entry.card.id, snapshot: revision(entry.card.cart) });
   });
-  router.use("/instamart", express.urlencoded({ extended: false, limit: "16kb" }), (_req, res, next) => {
+
+  router.use(prefix, express.urlencoded({ extended: false, limit: "16kb" }), (_req, res, next) => {
     res.set({
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
-      "content-security-policy":
-        "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self' https://mcp.swiggy.com https://mcp-staging.swiggy.com https://www.swiggy.com; frame-ancestors 'none'; base-uri 'none'",
+      "content-security-policy": `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self' ${provider} https://www.swiggy.com; frame-ancestors 'none'; base-uri 'none'`,
     });
     next();
   });
-  router.get("/instamart/open", (_req, res) =>
+  router.get(openPath, (_req, res) =>
     page(
       res,
-      "Connect your Instamart account",
-      '<form method="post"><input type="hidden" name="ticket"><button>Continue to Swiggy</button></form><script src="/instamart/open.js"></script>',
+      `Connect your ${name} account`,
+      `<form method="post"><input type="hidden" name="ticket"><button>Continue to ${zepto ? name : "Swiggy"}</button></form><script src="${openPath}.js"></script>`,
     ),
   );
-  router.get("/instamart/open.js", (_req, res) =>
+  router.get(openPath + ".js", (_req, res) =>
     res
       .type("js")
       .send(
         'document.forms[0].elements.ticket.value = location.hash.slice(1); history.replaceState(null, "", location.pathname);',
       ),
   );
-  router.post("/instamart/open", async (req, res) => {
-    const secret = typeof req.body.ticket === "string" ? req.body.ticket : "";
-    const sealedTicket = secret && (await store.takeInstamartState(rowId(secret)));
-    if (!sealedTicket) return void res.status(410).send("Link expired. Open Review with Instamart again.");
+  router.post(openPath, async (req, res) => {
+    const secret: unknown = req.body?.ticket;
+    const sealedTicket = typeof secret === "string" && /^[\w-]{43}$/.test(secret) &&
+      await store.takeInstamartState(rowId(secret));
+    if (typeof secret !== "string" || !sealedTicket) return void res.status(410).send("Link expired. Reopen it from the app.");
     const ticket = unseal<Ticket>(rowKey(secret), sealedTicket);
-    await currentCart(ticket);
+    if (ticket.cartId !== undefined) await currentCart(ticket);
+    const id = linkId(ticket.householdId);
+    const link = await store.retailerLink(id);
+    if (link?.connection !== ticket.connection) fail(409, "The account connection changed. Reopen it from the app.");
     const session: Session = {
       ...ticket,
       cookie: random(),
@@ -282,22 +331,14 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
       state: random(),
       csrf: random(),
     };
-    const prior = await sessionOf(req);
-    if (prior?.token && prior.householdId === ticket.householdId) {
-      session.token = prior.token;
-      session.until = Math.min(session.until, prior.until);
-      if (prior.cartId === ticket.cartId) {
-        session.address = prior.address;
-      }
-    }
-    const sealed = await store.linkedInstamart(linkId(ticket.householdId));
-    if (!session.token && sealed) {
-      let credential = unseal<Credential>(credentialKey(ticket), sealed);
+    if (ticket.cartId !== undefined && link?.sealed) {
+      let credential = unseal<Credential>(credentialKey(ticket), link.sealed);
       if (credential.expiresAt <= Date.now() + 60_000 && credential.refresh_token) {
         const renewed = await exchange({ grant_type: "refresh_token", refresh_token: credential.refresh_token });
         if (renewed) {
-          credential = renewed;
-          await store.saveInstamartLink(linkId(ticket.householdId), seal(credentialKey(ticket), credential));
+          credential = { ...renewed, refresh_token: renewed.refresh_token ?? credential.refresh_token };
+          if (!await store.saveRetailerLink(id, seal(credentialKey(ticket), credential), link.connection, link))
+            fail(409, "The account connection changed. Reopen the cart from the app.");
         }
       }
       if (credential.expiresAt > Date.now() + 60_000) {
@@ -305,58 +346,62 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
           session.until = Math.min(session.until, credential.expiresAt);
           await clientOf(credential.access_token, session.until);
           session.token = credential.access_token;
+          const prior = await cartSessionOf(req);
+          if (prior?.cartId === ticket.cartId && prior.connection === session.connection) session.address = prior.address;
         } catch (error) {
           if (!(error instanceof Error && "status" in error && error.status === 401)) throw error;
         }
       }
     }
     await saveSession(session);
-    res.cookie("instamart_session", session.cookie, {
+    res.cookie(cookieName, session.cookie, {
       httpOnly: true,
       sameSite: "lax",
       secure: host.protocol === "https:",
-      path: "/instamart",
+      path: prefix,
       maxAge: 15 * 60_000,
     });
-    if (session.token)
+    if (session.token && session.cartId !== undefined)
       return void res.redirect(303, await store.instamartClaimed(session.cartId) ? "/instamart/prepared" : "/instamart/addresses");
     const params = new URLSearchParams({
       client_id: await getClientId(),
-      redirect_uri: origin + CALLBACK,
+      redirect_uri: origin + callback,
       state: session.state,
-      scope: "mcp:tools",
+      scope: zepto ? "tools:read" : "mcp:tools",
       response_type: "code",
       code_challenge_method: "S256",
       code_challenge: createHash("sha256").update(session.verifier).digest("base64url"),
+      ...(zepto && { resource }),
     });
-    res.redirect(303, provider + "/auth/authorize?" + params);
+    res.redirect(303, provider + (zepto ? "/authorize?" : "/auth/authorize?") + params);
   });
   const network = config.network ?? fetch;
-  async function exchange(payload: object): Promise<Credential | undefined> {
-    const auth = await network(provider + "/auth/token", {
+  async function exchange(payload: Record<string, string>): Promise<Credential | undefined> {
+    const params = { ...payload, client_id: await getClientId(), ...(zepto && { resource }) };
+    const auth = await network(provider + (zepto ? "/token" : "/auth/token"), {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(15000),
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...payload, client_id: await getClientId() }),
+      headers: { "content-type": zepto ? "application/x-www-form-urlencoded" : "application/json" },
+      body: zepto ? new URLSearchParams(params) : JSON.stringify(params),
     });
     if ([400, 401, 403].includes(auth.status)) return;
-    if (!auth.ok) fail(502, "Swiggy sign-in is unavailable. Try again later.");
-    const tokens = await auth.json();
+    if (!auth.ok) fail(502, `${name} sign-in is unavailable. Try again later.`);
+    const tokens = await auth.json().catch(() => fail(502, `${name} sign-in failed.`));
     if (
-      typeof tokens.access_token !== "string" ||
+      typeof tokens?.access_token !== "string" ||
       !tokens.access_token ||
       !Number.isFinite(tokens.expires_in) ||
       tokens.expires_in <= 0
     )
-      fail(502, "Swiggy sign-in failed.");
+      fail(502, `${name} sign-in failed.`);
     return {
       access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
+      refresh_token: typeof tokens.refresh_token === "string" ? tokens.refresh_token : undefined,
       expiresAt: Date.now() + tokens.expires_in * 1000,
     };
   }
-  const currentCart = async (s: Ticket): Promise<Cart> => {
+  const currentCart = async (s: CartTicket): Promise<Cart> => {
     const e = await store.action(s.cartId);
     if (!e || e.done || e.householdId !== s.householdId || e.card.type !== "cart")
       fail(409, "This cart changed. Reopen it from the app.");
@@ -364,33 +409,48 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
     return e.card.cart;
   };
 
-  const formSession = async (req: Request) => {
+  router.get(callback, async (req, res) => {
     const s = await sessionOf(req);
-    if (!s || !s.token || s.csrf !== req.body?.csrf) fail(403, "Review session expired. Reopen the cart from the app.");
-    return s;
-  };
-  router.get(CALLBACK, async (req, res) => {
-    const s = await sessionOf(req);
-    if (!s || !s.state || req.query.state !== s.state || typeof req.query.code !== "string") return void res.sendStatus(403);
-    await currentCart(s);
-    const verifier = s.verifier;
-    s.state = s.verifier = "";
-    await saveSession(s); // state is single use, even if the exchange below fails
+    if (!s || !s.state || req.query.state !== s.state || (req.query.iss !== undefined && req.query.iss !== provider))
+      return void res.sendStatus(403);
+    if (!await store.claimInstamartState("used " + rowId(s.state), "1", s.until)) return void res.sendStatus(403);
+    if (typeof req.query.code !== "string")
+      return page(res, `${name} sign-in incomplete`, "<p>Return to the app to try again.</p>");
+    const id = linkId(s.householdId);
+    const link = await store.retailerLink(id);
+    const changed = () => fail(409, "The account connection changed. Reopen it from the app.");
+    if (link?.connection !== s.connection) changed();
+    if (s.cartId !== undefined) await currentCart(s);
     const credential = await exchange({
       grant_type: "authorization_code",
       code: req.query.code,
-      code_verifier: verifier,
-      redirect_uri: origin + CALLBACK,
+      code_verifier: s.verifier,
+      redirect_uri: origin + callback,
     });
-    if (!credential) fail(401, "Swiggy login expired. Open Review with Instamart again.");
+    if (!credential) fail(401, `${name} sign-in could not be completed. Start again from the app.`);
     s.until = Math.min(s.until, credential.expiresAt);
-    await clientOf(credential.access_token, s.until);
+    if (s.cartId !== undefined) await clientOf(credential.access_token, s.until);
+    const connection = random();
+    if (!await store.saveRetailerLink(id, seal(credentialKey(s), credential), connection, link)) changed();
+    if (s.cartId === undefined) {
+      await store.takeInstamartState(rowId(s.cookie));
+      res.clearCookie(cookieName, { path: prefix, secure: host.protocol === "https:", httpOnly: true, sameSite: "lax" });
+      return page(res, `${name} connected`, "<p>Return to the app to see your grocery accounts.</p>");
+    }
+    s.state = s.verifier = "";
+    s.connection = connection;
     s.token = credential.access_token;
-    await store.saveInstamartLink(linkId(s.householdId), seal(credentialKey(s), credential));
     await saveSession(s);
     res.redirect(303, await store.instamartClaimed(s.cartId) ? "/instamart/prepared" : "/instamart/addresses");
   });
-  const readForReview = async (s: Session) => {
+
+  if (zepto) return router;
+  const formSession = async (req: Request) => {
+    const s = await cartSessionOf(req);
+    if (!s || s.csrf !== req.body?.csrf) fail(403, "Review session expired. Reopen the cart from the app.");
+    return s;
+  };
+  const readForReview = async (s: CartSession) => {
     const token = await store.beginInstamartReview(s.cartId, s.snapshot);
     const latest = await (await clientOf(s.token!, s.until)).cart();
     const local = await currentCart(s);
@@ -400,7 +460,7 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
     return { latest, token, revisedCart };
   };
   router.get("/instamart/prepared", async (req, res) => {
-    const s = await sessionOf(req);
+    const s = await cartSessionOf(req);
     if (!s?.token || !await store.instamartClaimed(s.cartId)) return void res.sendStatus(403);
     const { latest, revisedCart } = await readForReview(s);
     const intent = await store.instamartIntent(s.cartId);
@@ -408,7 +468,7 @@ export function instamartRouter(config: InstamartConfig, store: Store, isAuthent
     await invoice(s, latest, intent, res, saveSession, { revisedCart });
   });
   router.get("/instamart/addresses", async (req, res) => {
-    const s = await sessionOf(req);
+    const s = await cartSessionOf(req);
     if (!s?.token) return void res.sendStatus(403);
     const pageNumber = Number(req.query.page ?? 1);
     if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) return void res.sendStatus(400);

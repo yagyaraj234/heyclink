@@ -1,7 +1,7 @@
 import { installAuth } from "./actions/auth.ts";
 import type { AuthConfig } from "./actions/auth.ts";
-import { instamartRouter } from "./actions/instamart.ts";
-import type { InstamartConfig } from "./actions/instamart.ts";
+import { retailerRouter } from "./actions/instamart.ts";
+import type { RetailerConfig } from "./actions/instamart.ts";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
@@ -36,7 +36,8 @@ export interface AppDeps {
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
   health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
   store: Store;
-  instamart?: InstamartConfig;
+  instamart?: RetailerConfig;
+  zepto?: RetailerConfig;
   auth?: AuthConfig;
   swiggy?: Swiggy; // places approved orders; default: labelled mock orders
 }
@@ -105,7 +106,7 @@ function householdProfile(body: { name?: unknown; location?: unknown } | undefin
   return { name: name.trim(), location: location.trim() };
 }
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store, swiggy = mockSwiggy, instamart, auth }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store, swiggy = mockSwiggy, instamart, zepto, auth }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
   const feedTracking = async (e: Entry, owner: boolean) => {
@@ -154,7 +155,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   app.use((req, res, next) => {
     res.set({
       "access-control-allow-origin": corsOrigin,
-      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers": "content-type, authorization",
       vary: "origin",
     });
@@ -176,7 +177,9 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     next();
   });
 
-  if (instamart) app.use(instamartRouter(instamart, store, access && (req => access.role(req) === "owner")));
+  const signedInOwner = access && ((req: Request) => access.role(req) === "owner");
+  if (instamart) app.use(retailerRouter("instamart", instamart, store, signedInOwner));
+  if (zepto && signedInOwner) app.use(retailerRouter("zepto", zepto, store, signedInOwner));
   app.get("/health", (_req, res) => void res.json({ ok: true, stt: health.stt, llm: health.llm }));
 
   app.post("/calls", async (req, res) => {

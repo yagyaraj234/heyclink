@@ -66,7 +66,8 @@ export function installAuth(app: Express, store: Store, config: AuthConfig, inst
   app.all("/households/:id", signedIn, member(household));
   app.all("/households/:id/actions", signedIn, member((req) => ({ id: id(req) })));
   app.all(["/households/:id/alerts", "/households/:id/meal-plan", "/households/:id/invites",
-    "/households/:id/invites/cancel", "/households/:id/cook/revoke"], signedIn, member(household));
+    "/households/:id/invites/cancel", "/households/:id/cook/revoke",
+    "/households/:id/grocery-accounts/:retailer"], signedIn, member(household));
   app.all("/households/:id/reset", (_req, res) => void res.sendStatus(404));
   app.post(["/households", "/auth/claim"], signedIn);
   app.get("/households", signedIn, async (req, res) => void res.json(await store.auth.list(user(req).uid)));

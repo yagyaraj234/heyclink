@@ -10,9 +10,12 @@ Use separate databases or schemas for authenticated households and the frozen de
 | `INVITE_ORIGIN` | Public HTTPS origin that routes `/invite` and `/.well-known/` to this API |
 | `INVITE_IOS_APP_ID` | Team ID followed by `.com.yagyaraj.kitchen` for Universal Links |
 | `INVITE_ANDROID_SHA256` | Comma-separated SHA-256 fingerprints for the actual Android signing certificates |
-| `INSTAMART_CREDENTIAL_KEY` | Stable 32-byte hex secret required when the authenticated API enables Instamart |
+| `INSTAMART_CREDENTIAL_KEY` | Stable 32-byte hex secret for encrypted grocery account credentials |
+| `ZEPTO_CLIENT_ID` | Zepto public OAuth client ID registered with `<INVITE_ORIGIN>/zepto/callback` |
 
-Use a secure credential store for the Firebase service account and Instamart key. Keep the Instamart key stable across replicas and restarts. Owners with old Instamart links reconnect on first use after migration.
+Use a secure credential store for the Firebase service account and grocery credential key. Keep the key stable across replicas and restarts. Owners who linked Instamart before switching to Firebase can reconnect in Grocery accounts.
+
+Instamart account linking uses the existing Swiggy integration settings and `/instamart/callback` on `INSTAMART_PUBLIC_ORIGIN`. For Zepto, follow the [official callback allowlist instructions](https://github.com/zeptonow/mcp#-allowed-redirect-uris), then set `ZEPTO_CLIENT_ID` for the approved public client. Zepto linking requests `tools:read` access. Owners can remove the saved connection from Grocery accounts.
 
 On an existing database, owners recover via a verified Firebase phone and the saved owner credential on their phone. The claim moves ownership to the authenticated account and retires the legacy key. Cooks join again with fresh invites. Have a backup and plan assisted recovery for owners who have lost their old device or key.
 

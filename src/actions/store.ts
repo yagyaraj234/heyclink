@@ -75,6 +75,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS owner_keys (household text PRIMARY KEY, hash text NOT NULL);
   CREATE TABLE IF NOT EXISTS instamart_prepared (cart text PRIMARY KEY, revision text NOT NULL, intent text, receipt text, read_token text, review_revision text);
   CREATE TABLE IF NOT EXISTS instamart_links (household text PRIMARY KEY, sealed text NOT NULL);
+  ALTER TABLE instamart_links ADD COLUMN IF NOT EXISTS connection text NOT NULL DEFAULT '';
   CREATE TABLE IF NOT EXISTS instamart_state (id text PRIMARY KEY, value text NOT NULL, until bigint NOT NULL);
   CREATE TABLE IF NOT EXISTS calls (seq bigint GENERATED ALWAYS AS IDENTITY, id text PRIMARY KEY, household text NOT NULL, at text NOT NULL, data text NOT NULL);
   CREATE TABLE IF NOT EXISTS actions (seq bigint GENERATED ALWAYS AS IDENTITY, id text PRIMARY KEY, household text NOT NULL, call text, pos integer NOT NULL, data text NOT NULL);
@@ -152,6 +153,7 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
     await q(SCHEMA + ALERTS_SCHEMA + AUTH_SCHEMA);
   });
 
+  type RetailerLink = { sealed: string; connection: string };
   const alerts = openAlerts(q, tx);
   const store = {
     alerts,
@@ -174,10 +176,20 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
     }),
     revokeOwnerKey: async (id: string) => void await q("DELETE FROM owner_keys WHERE household = $1", id),
     hasOwnerKey: async (id: string) => !!(await q("SELECT 1 FROM owner_keys WHERE household = $1", id)).rowCount,
-    linkedInstamart: async (id: string) =>
-      (await q<{sealed: string}>("SELECT sealed FROM instamart_links WHERE household = $1", id)).rows[0]?.sealed,
-    saveInstamartLink: async (id: string, sealed: string) =>
-      void await q("INSERT INTO instamart_links VALUES ($1, $2) ON CONFLICT (household) DO UPDATE SET sealed = excluded.sealed", id, sealed),
+    retailerLink: async (id: string) =>
+      (await q<RetailerLink>("SELECT sealed, connection FROM instamart_links WHERE household = $1", id)).rows[0],
+    async saveRetailerLink(id: string, sealed: string, connection: string, expected?: RetailerLink) {
+      const result = expected
+        ? await q("UPDATE instamart_links SET sealed = $2, connection = $3 WHERE household = $1 AND sealed = $4 AND connection = $5",
+          id, sealed, connection, expected.sealed, expected.connection)
+        : await q("INSERT INTO instamart_links (household, sealed, connection) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+          id, sealed, connection);
+      return !!result.rowCount;
+    },
+    // Keep the changed connection ID so callbacks already in flight cannot restore a disconnected link.
+    disconnectRetailer: async (id: string, connection: string) =>
+      void await q(`INSERT INTO instamart_links (household, sealed, connection) VALUES ($1, '', $2)
+        ON CONFLICT (household) DO UPDATE SET sealed = '', connection = excluded.connection`, id, connection),
     // Instamart OAuth tickets, sessions and leases, shared by every instance. A row past `until` (epoch ms) is gone.
     instamartState: async (id: string) =>
       (await q<{value: string}>("SELECT value FROM instamart_state WHERE id = $1 AND until > $2", id, Date.now())).rows[0]?.value,
