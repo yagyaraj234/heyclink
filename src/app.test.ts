@@ -681,8 +681,8 @@ test('a single requested reminder stops after owner marks the purchase; delivery
   assert.equal((await send(path, {remindAt:tomorrow.toISOString()})).status, 200);
   assert.equal((await post(path, {state:'ordered'})).status, 403);
   assert.equal((await send(path, {state:'delivered'})).status, 409);
-  assert.equal((await send(path, {state:'ordered'})).status, 200);
-  assert.equal((await send(path, {state:'ordered'})).status, 200);
+  assert.equal((await send(path, {state:'ordered', reviewId: call.actions[0].cart.reviewId})).status, 200);
+  assert.equal((await send(path, {state:'ordered', reviewId: call.actions[0].cart.reviewId})).status, 200);
   assert.equal((await send(path, {state:'delivered'})).status, 200);
   const {runDue} = await import('./actions/orders.ts');
   const {mockSwiggy} = await import('./actions/swiggy.ts');
