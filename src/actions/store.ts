@@ -24,6 +24,8 @@ export function openStore(path = ":memory:") {
   db.exec(`
     CREATE TABLE IF NOT EXISTS households (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_keys (household TEXT PRIMARY KEY, hash TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS instamart_prepared (cart TEXT PRIMARY KEY, revision TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS instamart_links (household TEXT PRIMARY KEY, sealed TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, household TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, household TEXT NOT NULL, call TEXT, pos INTEGER NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS usage_samples (
@@ -68,6 +70,15 @@ export function openStore(path = ":memory:") {
     hasOwnerKey(id: string) {
       return !!db.prepare("SELECT 1 FROM owner_keys WHERE household=?").get(id);
     },
+    linkedInstamart: (id: string) =>
+      (db.prepare("SELECT sealed FROM instamart_links WHERE household = ?").get(id) as { sealed: string } | undefined)?.sealed,
+    saveInstamartLink: (id: string, sealed: string) =>
+      void db.prepare("INSERT OR REPLACE INTO instamart_links VALUES(?,?)").run(id, sealed),
+    // Keep the claim after an upstream timeout: a repeat could add the same packs twice.
+    claimInstamart: (cart: string, revision: string) =>
+      db.prepare("INSERT INTO instamart_prepared VALUES (?,?) ON CONFLICT DO NOTHING").run(cart, revision).changes === 1,
+    instamartClaimed: (cart: string) =>
+      (db.prepare("SELECT revision FROM instamart_prepared WHERE cart=?").get(cart) as { revision: string } | undefined)?.revision,
     isOwner(id: string, authorization: string | undefined): boolean {
       const token = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization ?? "")?.[1];
       return !!token && !!db.prepare("SELECT 1 FROM owner_keys WHERE household = ? AND hash = ?")

@@ -849,3 +849,288 @@ test("removing the last item leaves the cart empty and pending until a cook clar
   assert.equal(answered.cart.id, cart.id);
   assert.equal(answered.cart.cart.total, 18);
 });
+
+function requestHandoff(base:string, card:Extract<ActionCard,{type:"cart"}>, ownerToken:string, reviewId=(card.cart as {reviewId?:string}).reviewId) {
+  return fetch(base+"/actions/"+card.id+"/instamart", {method:"POST",headers:{authorization:"Bearer "+ownerToken,"content-type":"application/json"},body:JSON.stringify({reviewId})});
+}
+
+test("only the signed-up owner can open a cart for an Instamart OAuth session", async (t) => {
+  const store=openStore();
+  const { post, base, close } = await serve(undefined, {store,
+    instamart: { origin: "https://kitchen.example", clientId: "kitchen" },
+  });
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  const other = await (await post("/households", signup)).json();
+  assert.equal(owner.instamartAvailable, true);
+  const call = (await (await post("/calls", { householdId: owner.id, transcript: case01.transcript })).json()) as CallResult;
+  const card = call.actions.find((a) => a.type === "cart")!;
+  const path = `/actions/${card.id}/instamart`;
+  assert.equal((await post(path)).status, 403);
+  const open = (key:string) => requestHandoff(base, card, key);
+  // Older stored carts might already carry an owner-review marker from the cart lane.
+  const saved=store.action(card.id)!;
+  assert.ok(saved.card.type==="cart");
+  Object.assign(saved.card.cart,{reviewId:"current-review"});
+  store.saveAction(saved);
+  assert.equal((await requestHandoff(base,card,owner.ownerToken,"outdated")).status,409);
+  Object.assign(card.cart,{reviewId:"current-review"});
+  assert.equal((await open(other.ownerToken)).status, 403);
+  const { url } = await (await open(owner.ownerToken)).json();
+  const link = new URL(url);
+  assert.equal(link.origin, "https://kitchen.example");
+  const begin = () =>
+    fetch(base + "/instamart/open", {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ ticket: link.hash.slice(1) }),
+    });
+  const start = await begin();
+  const auth = new URL(start.headers.get("location")!);
+  assert.equal(auth.origin + auth.pathname, "https://mcp.swiggy.com/auth/authorize");
+  assert.equal(auth.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(auth.searchParams.get("redirect_uri"), "https://kitchen.example/instamart/callback");
+  assert.ok(auth.searchParams.get("state"));
+  assert.equal((await begin()).status, 410);
+  assert.equal((await fetch(base + "/instamart/callback?code=wrong&state=wrong")).status, 403);
+});
+
+test("owner picks a real pack and sees the full Instamart bill before opening Swiggy", async (t) => {
+  const existing = {
+    spinId: "spin-t",
+    skuId: "sku-t",
+    itemName: "Tomato",
+    itemVariant: "500 g",
+    quantity: 1,
+    discountedFinalPrice: 20,
+    isInStockAndAvailable: true,
+  };
+  const onion = {
+    spinId: "spin-o",
+    skuId: "sku-o",
+    itemName: "Onion",
+    itemVariant: "500 g",
+    quantity: 1,
+    discountedFinalPrice: 22,
+    isInStockAndAvailable: true,
+  };
+  let cartItems = [existing];
+  let payable = "₹52";
+  let readGate: (() => Promise<void>) | undefined;
+  const invoice = () => ({
+    items: cartItems,
+    cartTotalAmount: payable,
+    selectedAddressDetails: { id: "home", address: "House 7" },
+    billBreakdown: { lineItems: [{ label: "Delivery fee", value: "₹10" }], toPay: { label: "To pay", value: payable } },
+  });
+  const methods: string[] = [];
+  const network: typeof fetch = async (url, init) => {
+    const msg = JSON.parse(String(init?.body));
+    if (String(url).endsWith("/auth/token")) {
+      assert.equal(msg.code, "owner-code");
+      assert.match(msg.code_verifier, /^[\w-]{43}$/);
+      return Response.json({ access_token: "test-session", expires_in: 3600 });
+    }
+    assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer test-session");
+    if (msg.method === "initialize")
+      return Response.json({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { protocolVersion: "2025-03-26", capabilities: { tools: {} } },
+      });
+    if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const { name, arguments: args } = msg.params;
+    methods.push(name);
+    let data;
+    if (name === "get_addresses")
+      data = { addresses: [{ id: "home", addressLine: "House 7" }], pagination: { hasMore: false } };
+    else if (name === "get_cart") {
+      if (readGate) await readGate();
+      data = invoice();
+    } else if (name === "search_products")
+      data = {
+        products: [
+          {
+            inStock: true,
+            isAvail: true,
+            displayName: "Onion",
+            variations: [
+              {
+                skuId: "sku-o",
+                spinId: "spin-o",
+                displayName: "Fresh onion",
+                quantityDescription: "500 g",
+                isInStockAndAvailable: true,
+                price: { offerPrice: 22 },
+                sla: { value: "12", unit: "min" },
+              },
+              {
+                skuId: "bulk",
+                spinId: "bulk",
+                displayName: "Wholesale onion",
+                quantityDescription: "5 kg",
+                isInStockAndAvailable: true,
+                price: { offerPrice: 180 },
+              },
+              {
+                skuId: "crate",
+                spinId: "crate",
+                displayName: "Commercial crate",
+                quantityDescription: "1 pack",
+                isInStockAndAvailable: true,
+                price: { offerPrice: 800 },
+              },
+            ],
+          },
+          {
+            displayName: "Onion Powder",
+            inStock: true,
+            isAvail: true,
+            variations: [
+              {
+                skuId: "wrong",
+                spinId: "wrong",
+                displayName: "Seasoning",
+                quantityDescription: "500 g",
+                isInStockAndAvailable: true,
+                price: { offerPrice: 25 },
+              },
+            ],
+          },
+        ],
+      };
+    else if (name === "update_cart") {
+      assert.equal(args.selectedAddressId, "home");
+      assert.deepEqual(args.items, [
+        { spinId: "spin-t", skuId: "sku-t", quantity: 1 },
+        { spinId: "spin-o", skuId: "sku-o", quantity: 1 },
+      ]);
+      cartItems = [existing, onion];
+      data = invoice();
+    } else throw Error("unexpected Swiggy tool " + name);
+    return Response.json({ jsonrpc: "2.0", id: msg.id, result: { structuredContent: { success: true, data } } });
+  };
+  const { post, base, close } = await serve(undefined, {
+    instamart: { origin: "https://kitchen.example", clientId: "kitchen", network },
+    llm: llmReplying({
+      groceries: [
+        { item: "onion", raw: "one packet onion", qty: 1, unit: "packet", confidence: 1 },
+        { item: "methi", raw: "thoda methi", qty: 1, unit: "bunch", confidence: 0.4 },
+      ],
+      notes: [],
+    }),
+  });
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  const call = (await (await post("/calls", { householdId: owner.id, transcript: "500 g onion" })).json()) as CallResult;
+  const card = call.actions.find((a) => a.type === "cart")!;
+  const handoff = await requestHandoff(base, card, owner.ownerToken);
+  const ticket = new URL((await handoff.json()).url).hash.slice(1);
+  const form = (path: string, body: Record<string, string>, cookie = "") =>
+    fetch(base + path, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams(body),
+    });
+  const start = await form("/instamart/open", { ticket });
+  const cookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  const state = new URL(start.headers.get("location")!).searchParams.get("state");
+  const addresses = await (
+    await fetch(base + "/instamart/callback?code=owner-code&state=" + state, { headers: { cookie } })
+  ).text();
+  assert.match(addresses, /House 7/);
+  const csrf = addresses.match(/name="csrf" value="([^"]+)"/)![1]!;
+  const choices = await (await form("/instamart/variants", { address: "home", csrf }, cookie)).text();
+  assert.match(choices, /Fresh onion/);
+  assert.doesNotMatch(choices, /Wholesale onion|Commercial crate|Seasoning/);
+  assert.equal((await form("/instamart/prepare", { csrf: "wrong", line0: "sku-o" }, cookie)).status, 403);
+  cartItems = [{ ...onion, quantity: 4 }];
+  assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
+  assert.equal(methods.filter((name) => name === "update_cart").length, 0);
+  cartItems = [{ ...onion, quantity: 4, itemVariant: "1 pack" }];
+  assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
+  cartItems = [{ ...onion, spinId: "other", skuId: "other", itemVariant: "1 pack" }];
+  assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
+  cartItems = [{ ...existing, itemVariant: "bulk crate" }];
+  assert.equal((await form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie)).status, 409);
+  // A different ingredient can fill its own household limit.
+  cartItems = [{ ...existing, itemVariant: "2 kg" }];
+  const nextCall = (await (await post("/calls", { householdId: owner.id, transcript: "onion" })).json()) as CallResult;
+  const nextCart = nextCall.actions.find((c) => c.type === "cart")!;
+  const another = await requestHandoff(base, nextCart, owner.ownerToken);
+  const nextStart = await form("/instamart/open", { ticket: new URL((await another.json()).url).hash.slice(1) });
+  const otherCookie = nextStart.headers.get("set-cookie")!.split(";")[0]!;
+  const otherAddresses = await (await fetch(base + "/instamart/addresses", { headers: { cookie: otherCookie } })).text();
+  const otherCsrf = otherAddresses.match(/name="csrf" value="([^"]+)"/)![1]!;
+  await form("/instamart/variants", { csrf: otherCsrf, address: "home" }, otherCookie);
+  const blocked = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  readGate = () => {
+    readGate = undefined;
+    blocked.resolve();
+    return release.promise;
+  };
+  const firstPrepare = form("/instamart/prepare", { csrf, line0: "sku-o" }, cookie);
+  await blocked.promise;
+  const conflict = await form("/instamart/prepare", { csrf: otherCsrf, line0: "sku-o" }, otherCookie);
+  release.resolve();
+  const bill = await (await firstPrepare).text();
+  assert.equal(conflict.status, 409);
+  assert.match(bill, /Delivery fee/);
+  assert.match(bill, /₹52/);
+  assert.match(bill, /House 7/);
+  assert.match(bill, /Tomato/);
+  assert.match(bill, /12 min/);
+  // Reopening the same app card must offer the existing retailer cart without adding again.
+  const again = await requestHandoff(base, card, owner.ownerToken);
+  const reopenTicket = new URL((await again.json()).url).hash.slice(1);
+  // Owner can return without a browser session and without another OTP.
+  const returning = await form("/instamart/open", { ticket: reopenTicket });
+  const nextCookie = returning.headers.get("set-cookie")!.split(";")[0]!;
+  assert.equal(returning.headers.get("location"), "/instamart/prepared");
+  const existingBill = await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } });
+  assert.match(await existingBill.text(), /₹52/);
+  payable = "₹56";
+  const changed = await form("/instamart/continue", { csrf }, cookie);
+  assert.equal(changed.status, 409);
+  const updated = await changed.text();
+  assert.match(updated, /₹56/);
+  assert.equal((await form("/instamart/continue", { csrf }, cookie)).status, 403);
+  const newCsrf = updated.match(/name="csrf" value="([^"]+)"/)![1]!;
+  const checkout = await form("/instamart/continue", { csrf: newCsrf }, cookie);
+  assert.equal(checkout.headers.get("location"), "https://www.swiggy.com/instamart");
+  assert.match(checkout.headers.get("content-security-policy") ?? "", /form-action [^;]*https:\/\/www\.swiggy\.com/);
+  assert.equal(methods.filter((name) => name === "update_cart").length, 1);
+  const clarify = call.actions.find((a) => a.type === "question")!;
+  assert.equal((await post("/actions/" + clarify.id + "/answer", { option: "Yes, add it" })).status, 200);
+  assert.equal((await form("/instamart/continue", { csrf: newCsrf }, cookie)).status, 409);
+  assert.equal((await fetch(base + "/instamart/prepared", { headers: { cookie: nextCookie } })).status, 409);
+});
+
+test("staging household connects to Swiggy staging", async (t) => {
+  const registration: typeof fetch = async (url, init) => {
+    assert.equal(String(url), "https://mcp-staging.swiggy.com/auth/register");
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.redirect_uris, ["https://kitchen.example/instamart/callback"]);
+    return Response.json({ client_id: "issued-id" });
+  };
+  const { post, base, close } = await serve(undefined, {
+    instamart: { origin: "https://kitchen.example", network: registration, staging: true },
+  });
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  const call = (await (await post("/calls", { householdId: owner.id, transcript: case01.transcript })).json()) as CallResult;
+  const cart = call.actions.find((c) => c.type === "cart")!;
+  const response = await requestHandoff(base, cart, owner.ownerToken);
+  const ticket = new URL((await response.json()).url).hash.slice(1);
+  const login = await fetch(base + "/instamart/open", {
+    method: "POST",
+    redirect: "manual",
+    body: new URLSearchParams({ ticket }),
+  });
+  const location = new URL(login.headers.get("location")!);
+  assert.equal(location.hostname, "mcp-staging.swiggy.com");
+  assert.equal(location.searchParams.get("client_id"), "issued-id");
+});
