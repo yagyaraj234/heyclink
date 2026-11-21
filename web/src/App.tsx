@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { encode } from "uqr";
 import type { ActionCard, CallResult, GroceryLine, Household } from "../../src/contracts.ts";
 
 const HOUSEHOLD = "h1";
@@ -239,6 +240,7 @@ function Card({ card, limit, status, onApprove, onAnswer }: {
           {cart.checkoutUrl && <a href={cart.checkoutUrl} target="_blank" rel="noreferrer">checkout</a>}
           <button onClick={onApprove} disabled={done}>{done ? "Approved ✓" : "Approve"}</button>
         </div>
+        {done && cart.upiUrl && <Upi url={cart.upiUrl} />}
       </div>
     );
   }
@@ -248,7 +250,7 @@ function Card({ card, limit, status, onApprove, onAnswer }: {
         <h3>Advance {rupees(card.advance.amount)}</h3>
         <p>{card.advance.reason ?? "No reason given"} · to <strong>{card.payee}</strong></p>
         {done ? (
-          card.upiUrl ? <p><a className="upi" href={card.upiUrl}>Pay via UPI</a> <code>{card.upiUrl}</code></p> : <p>Approved ✓</p>
+          card.upiUrl ? <Upi url={card.upiUrl} /> : <p>Approved ✓</p>
         ) : (
           <button onClick={onApprove}>Approve</button>
         )}
@@ -263,6 +265,25 @@ function Card({ card, limit, status, onApprove, onAnswer }: {
           <button key={o} onClick={() => onAnswer(o)} disabled={done}>{o}</button>
         ))}
         {done && <span className="muted">Answered ✓</span>}
+      </div>
+    </div>
+  );
+}
+
+// Link for the phone that has the UPI app; QR for anyone else's phone. Drawn client-side from the upi:// string.
+function Upi({ url }: { url: string }) {
+  const { size, data } = encode(url, { border: 4 }); // 4-module quiet zone, per the QR spec
+  const d = data.flatMap((row, y) => row.map((dark, x) => (dark ? `M${x} ${y}h1v1h-1z` : ""))).join("");
+  return (
+    <div className="upi-pay">
+      <svg className="qr" viewBox={`0 0 ${size} ${size}`} shapeRendering="crispEdges" role="img" aria-label="UPI payment QR code">
+        <rect width={size} height={size} fill="#fff" />
+        <path d={d} fill="#000" />
+      </svg>
+      <div>
+        <a className="upi" href={url}>Pay via UPI</a>
+        <p className="muted">or scan with any UPI app</p>
+        <code>{url}</code>
       </div>
     </div>
   );
