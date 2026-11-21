@@ -288,16 +288,19 @@ function Owner({ householdId }: { householdId: string }) {
   const [errors, setErrors] = useState<Record<string, string>>({}); // card id (or "feed") → message
   const [busy, setBusy] = useState<string | null>(null);
   const inFlight = useRef(false);
-  // ponytail: meal plans and their carts aren't tied to a call, so GET /calls never returns them. Held here
-  // (newest first) until reload; poll GET /households/:id/actions once actions ships it.
-  const [loose, setLoose] = useState<{ card: ActionCard; status: ActionStatus }[]>([]);
-  const settle = (id: string, status: ActionStatus) => setLoose((l) => l.map((x) => (x.card.id === id ? { ...x, status } : x)));
+  // cards outside any call (meal plans, their cook carts, orders from those), newest first
+  const [loose, setLoose] = useState<{ card: ActionCard; status: ActionStatus; at: string }[]>([]);
 
   const load = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      setCalls(await api<Call[]>(`/calls?householdId=${householdId}`));
+      const [c, l] = await Promise.all([
+        api<Call[]>(`/calls?householdId=${householdId}`),
+        api<typeof loose>(`/households/${householdId}/actions`),
+      ]);
+      setCalls(c);
+      setLoose(l);
       setErrors(({ feed: _, ...rest }) => rest);
     } catch (e) {
       setErrors((m) => ({ ...m, feed: `Can't reach ${API}: ${(e as Error).message}` }));
@@ -326,26 +329,18 @@ function Owner({ householdId }: { householdId: string }) {
   const approve = (card: ActionCard, body?: { order: string }) =>
     act(card, async () => {
       const r = await postJson<{ upiUrl?: string }>(`/actions/${card.id}/approve`, body ?? {});
-      settle(card.id, "approved");
       const upi = r.upiUrl ?? (card.type === "advance" ? card.upiUrl : undefined);
       if (upi) await Linking.openURL(upi).catch(() => { throw new Error(`Approved. No UPI app opened ${upi}`); });
     });
-  const answer = (card: ActionCard, option: string) =>
-    act(card, async () => {
-      const r = await postJson<{ cart?: ActionCard }>(`/actions/${card.id}/answer`, { option });
-      settle(card.id, "answered");
-      // a question's cart belongs to its call and comes back in the poll; a meal plan's "cook" cart doesn't
-      const cart = r.cart;
-      if (card.type === "meal-plan" && cart) setLoose((l) => [{ card: cart, status: "pending" }, ...l]);
-    });
+  const answer = (card: ActionCard, option: string) => act(card, () => postJson(`/actions/${card.id}/answer`, { option }));
 
   const [planning, setPlanning] = useState(false);
   const planTomorrow = async () => {
     setPlanning(true);
     setErrors(({ plan: _, ...rest }) => rest);
     try {
-      const card = await postJson<ActionCard>(`/households/${householdId}/meal-plan`, {});
-      setLoose((l) => [{ card, status: "pending" }, ...l]);
+      await postJson(`/households/${householdId}/meal-plan`, {});
+      await load();
     } catch (e) {
       setErrors((m) => ({ ...m, plan: `Plan tomorrow: ${(e as Error).message}` }));
     } finally {
