@@ -5,8 +5,6 @@ const HOUSEHOLD = "h1";
 // The API adds a per-action status to every call (CallResult itself is frozen).
 type ActionStatus = "pending" | "approved" | "answered";
 type Call = CallResult & { status: Record<string, ActionStatus> };
-// ponytail: mode=plain isn't on main yet; the toggle shows only with ?compare. Drop this flag once it lands.
-const COMPARE = new URLSearchParams(location.search).has("compare");
 const rupees = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -64,7 +62,7 @@ export function App() {
     setSending({ text, t0: Date.now() });
     return run(async () => {
       // Same note, in parallel, through the base model (no household memory). Its failure never blocks the real call.
-      const plain = COMPARE && compare
+      const plain = compare
         ? api<CallResult>(`/calls?householdId=${HOUSEHOLD}&mode=plain`, { method: "POST", ...init })
           .catch((e: Error) => void setError(`Base model: ${e.message}`))
         : undefined;
@@ -334,11 +332,9 @@ function Composer({ busy, compare, onCompare, onAudio, onText, onError }: {
       </label>
       <input className="text" placeholder="Or type what Lakshmi said…" value={text} onChange={(e) => setText(e.target.value)} />
       <button type="submit" disabled={busy || !text.trim()}>Send</button>
-      {COMPARE && (
-        <label className="compare" title="Also send the note to the base model (no household memory) and show the difference">
-          <input type="checkbox" checked={compare} onChange={(e) => onCompare(e.target.checked)} /> <span className="long">Compare with </span>base model
-        </label>
-      )}
+      <label className="compare" title="Also send the note to the base model (no household memory) and show the difference">
+        <input type="checkbox" checked={compare} onChange={(e) => onCompare(e.target.checked)} /> <span className="long">Compare with </span>base model
+      </label>
     </form>
   );
 }
