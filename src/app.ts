@@ -90,14 +90,16 @@ function parseSignup(body: unknown): Signup | string {
 export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
-  const withStatus = ({ call, entries }: StoredCall) => ({ ...call, status: Object.fromEntries(entries.map((e) => [e.card.id, statusOf(e)])) });
+  const withStatus = ({ call, entries }: StoredCall) => ({ ...call,
+    ...(entries.some(e => e.tracking) && {tracking: Object.fromEntries(entries.filter(e => e.tracking).map(e => [e.card.id,e.tracking]))}),
+    status: Object.fromEntries(entries.map((e) => [e.card.id, statusOf(e)])) });
 
   const app = express();
   app.use((req, res, next) => {
     res.set({
       "access-control-allow-origin": corsOrigin,
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-headers": "content-type, authorization",
       vary: "origin",
     });
     if (req.method === "OPTIONS") return void res.sendStatus(204);
@@ -105,6 +107,14 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   });
   app.use(express.json());
   app.use(express.raw({ type: "audio/*", limit: "25mb" }));
+
+  app.post(["/actions/:id/approve", "/actions/:id/review"], (req, res, next) => {
+    const entry = typeof req.params.id === "string" ? store.action(req.params.id) : undefined;
+    if (entry && store.hasOwnerKey(entry.householdId) && !store.isOwner(entry.householdId, req.get("authorization"))) {
+      return void res.status(403).json({error: "Owner confirmation required"});
+    }
+    next();
+  });
 
   app.get("/health", (_req, res) => void res.json({ ok: true, stt: health.stt, llm: health.llm }));
 
@@ -166,7 +176,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
 
   app.get("/households/:id/actions", (req, res) => {
     if (!store.household(req.params.id)) return void res.status(404).json({ error: "unknown household" });
-    res.json(store.looseActions(req.params.id).map((e) => ({ card: e.card, status: statusOf(e), at: e.at })));
+    res.json(store.looseActions(req.params.id).map((e) => ({ card: e.card, status: statusOf(e), at: e.at, ...(e.tracking && {tracking: e.tracking}) })));
   });
 
   app.get("/calls", (req, res) => {
@@ -208,6 +218,41 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     card.needsApproval = next.total > household.approvalLimit;
     store.saveAction(entry);
     res.json({ cart: card });
+  });
+
+  app.post("/actions/:id/tracking", (req, res) => {
+    const entry = store.action(req.params.id);
+    if (!entry || entry.card.type !== "cart") return void res.sendStatus(404);
+    if (!store.isOwner(entry.householdId, req.get("authorization"))) return void res.sendStatus(403);
+    if (!entry.card.cart.lines.length) return void res.status(409).json({error: "Cart has no items"});
+    const tracking = entry.tracking ??= {};
+    const { state, remindAt } = req.body ?? {};
+    if (remindAt !== undefined) {
+      const time = typeof remindAt === "string" ? Date.parse(remindAt) : NaN;
+      if (!(time > Date.now()) || state !== undefined) return void res.status(400).json({error: "Choose a future reminder time"});
+      if (entry.done || tracking.remindAt) return void res.status(409).json({error: "Cart already handled or reminder already set"});
+      if (!store.alerts.hasDevice(entry.householdId)) return void res.status(409).json({error: "Enable grocery notifications first"});
+      tracking.remindAt = new Date(time).toISOString();
+      store.alerts.queue(entry.householdId, entry.card.id, "reminder", time);
+    } else if (state === "ordered") {
+      const cart = entry.card.cart as typeof entry.card.cart & {reviewId?: string};
+      if (cart.reviewId && req.body?.reviewId !== cart.reviewId) return void res.status(409).json({error: "Cart changed. Review the current items first."});
+      if (tracking.state === "delivered") return void res.status(409).json({error: "Already delivered"});
+      if (!entry.done) {
+        const home = store.household(entry.householdId)!;
+        home.history.push({at: new Date().toISOString().slice(0,10), lines: entry.card.cart.lines.map(({item,qty,unit,brand}) => ({item,qty,unit,brand}))});
+        store.saveHousehold(home);
+      }
+      entry.done = true;
+      tracking.state = "ordered";
+      delete tracking.remindAt;
+    } else if (state === "delivered") {
+      if (!tracking.state) return void res.status(409).json({error: "Mark the order placed first"});
+      tracking.state = "delivered";
+      tracking.deliveredAt ??= new Date().toISOString();
+    } else return void res.status(400).json({error: "Unknown tracking update"});
+    store.saveAction(entry);
+    res.json(tracking);
   });
 
   app.post("/actions/:id/approve", async (req, res) => {
@@ -350,6 +395,16 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
     while (!store.addHousehold(household, cookCode, ownerToken));
     res.set("cache-control", "no-store").status(201).json({ id, cookCode, ownerToken, instamartAvailable: false });
+  });
+
+  app.post("/households/:id/alerts", (req, res) => {
+    if (!store.isOwner(req.params.id, req.get("authorization"))) return void res.sendStatus(403);
+    const token = req.body?.token;
+    if (typeof token !== "string" || !/^Expo(?:nent)?PushToken\[[a-zA-Z0-9_-]{1,200}\]$/.test(token)) {
+      return void res.status(400).json({error: "Invalid Expo device token"});
+    }
+    store.alerts.register(req.params.id, token);
+    res.sendStatus(204);
   });
 
   app.post("/join", (req, res) => {

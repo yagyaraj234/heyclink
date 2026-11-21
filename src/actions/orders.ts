@@ -1,3 +1,4 @@
+import type { Push } from "./alerts.ts";
 import type { Order } from "../contracts.ts";
 import type { Entry, Store } from "./store.ts";
 import { matchesHouseholdBill } from "./cart.ts";
@@ -24,5 +25,10 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
 }
 
 /** Places every confirmed order whose scheduledFor has passed. server.ts runs it every 60 s. */
-export const runDue = (now: Date, store: Store, swiggy: Swiggy): Promise<Order[]> =>
-  Promise.all(store.dueOrders(now.toISOString()).map((e) => placeOrder(e, store, swiggy)));
+export async function runDue(now: Date, store: Store, swiggy: Swiggy, push?: Push): Promise<Order[]> {
+  const [orders] = await Promise.all([
+    Promise.all(store.dueOrders(now.toISOString()).map((e) => placeOrder(e, store, swiggy))),
+    push && store.alerts.deliver(now.getTime(), push),
+  ]);
+  return orders;
+}

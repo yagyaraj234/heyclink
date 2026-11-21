@@ -95,3 +95,46 @@ test("runDue fails a legacy bulk order before it reaches checkout", async () => 
   assert.equal(order?.status, "failed");
   assert.equal(carts.length, 0);
 });
+
+test('runDue sends one reminder at the selected time across repeated scheduler ticks', async () => {
+  const store = openStore();
+  store.alerts.register('h1','ExpoPushToken[test]');
+  store.addAction({householdId:'h1',done:false,card:{id:'list',type:'cart',cart,needsApproval:true}});
+  store.alerts.queue('h1','list','reminder',NOW.getTime());
+  store.alerts.queue('h1','list','reminder',NOW.getTime());
+  const deliveries: string[] = [];
+  const {swiggy} = fakeSwiggy();
+  const push = async (_token: string, _cart: string, kind: string) => {deliveries.push(kind);};
+  await runDue(new Date(NOW.getTime()-1),store,swiggy,push);
+  assert.equal(deliveries.includes('reminder'),false);
+  await Promise.all([runDue(NOW,store,swiggy,push),runDue(NOW,store,swiggy,push)]);
+  assert.deepEqual(deliveries.filter(kind=>kind==='reminder'),['reminder']);
+});
+
+test('an explicit cook deadline schedules one reminder thirty minutes before the groceries are needed', async () => {
+  const store = openStore();
+  const deadline = new Date(Date.now() + 3600_000);
+  const extraction = {groceries:[], notes:[], neededBy:deadline.toISOString()};
+  store.alerts.register('h1','ExpoPushToken[test]');
+  store.addCall({callId:'deadline',transcript:{text:'by dinner',lang:'en',provider:'fake'},extraction,actions:[],
+    timings:{sttMs:0,extractMs:0,planMs:0,totalMs:0}},'h1',new Date().toISOString());
+  store.addAction({householdId:'h1',callId:'deadline',done:false,card:{id:'dinner',type:'cart',cart,needsApproval:true}});
+  const deliveries: string[] = [];
+  const push = async (_token:string,_cartId:string,kind:string) => { deliveries.push(kind); };
+  const {swiggy} = fakeSwiggy();
+  await runDue(new Date(deadline.getTime()-1800_001),store,swiggy,push);
+  assert.deepEqual(deliveries,['ready']);
+  await runDue(new Date(deadline.getTime()-1800_000),store,swiggy,push);
+  assert.deepEqual(deliveries,['ready','reminder']);
+});
+
+test('a cart emptied before the notification is sent stays silent', async () => {
+  const store = openStore();
+  store.alerts.register('h1','ExpoPushToken[test]');
+  const card = {type:'cart',id:'empty',needsApproval:true,cart} satisfies ActionCard;
+  store.addAction({householdId:'h1',done:false,card});
+  store.saveAction({householdId:'h1',done:false,card:{...card,cart:{...cart,lines:[],total:0}}});
+  const deliveries: string[] = [];
+  await runDue(new Date(),store,fakeSwiggy().swiggy,async (_,id) => { deliveries.push(id); });
+  assert.deepEqual(deliveries,[]);
+});
