@@ -432,3 +432,13 @@ test("processCall: an ambiguous word with exactly one candidate in household his
   assert.match(schema, /"candidates"/);
   assert.match(schema, /kabuli-chana, kala-chana/);
 });
+
+test("processCall: an ambiguous word the household history doesn't settle comes back in extraction.ambiguous (चना, no history)", async () => {
+  const { stt } = fakeStt("do kilo चना le aana", "hi");
+  const { llm } = fakeLlm(chanaReply(["kabuli-chana", "kala-chana"]));
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries, []);
+  assert.deepEqual(res.extraction.ambiguous, [{ raw: "do kilo चना", qty: 2, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] }]);
+});
