@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createApp } from "./app.ts";
 import { openStore } from "./actions/store.ts";
+import { expoPush } from "./actions/alerts.ts";
 import { runDue } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import { processCall } from "./pipeline/process.ts";
@@ -24,7 +25,7 @@ const dataDir = process.env.DATA_DIR || ".data";
 mkdirSync(dataDir, { recursive: true });
 const store = openStore(join(dataDir, "vfi.db"));
 const swiggy = mockSwiggy; // ponytail: mock orders until the Instamart spike is go
-setInterval(() => void runDue(new Date(), store, swiggy).catch(console.error), 60_000);
+setInterval(() => void runDue(new Date(), store, swiggy, expoPush).catch(console.error), 60_000);
 
 const port = Number(process.env.PORT ?? 3000);
 const corsOrigin = process.env.CORS_ORIGIN || "*";
