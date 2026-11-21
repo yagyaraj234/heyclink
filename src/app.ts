@@ -33,7 +33,7 @@ export function createApp({ processCall, stt, llm }: AppDeps) {
 
   app.post("/calls", async (req, res) => {
     const isAudio = Buffer.isBuffer(req.body);
-    const body = isAudio ? {} : (req.body ?? {});
+    const body: { householdId?: unknown; transcript?: unknown; lang?: unknown } = isAudio ? {} : (req.body ?? {});
     const householdId = String(req.query.householdId ?? body.householdId ?? "");
     const household = households.get(householdId);
     if (!household) return void res.status(404).json({ error: `unknown household "${householdId}"` });
