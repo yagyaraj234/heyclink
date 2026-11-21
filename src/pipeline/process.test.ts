@@ -175,3 +175,22 @@ test("processCall: brand spoken as the item (Tata Tea, Surf Excel, Vim bar, Amul
     [["tea", "tata"], ["detergent-powder", "surf-excel"], ["dishwash-bar", "vim"], ["milk", "amul"]],
   );
 });
+
+test("processCall: no brand said → cart uses the household's preferred brand, extraction stays brandless", async () => {
+  const { stt } = fakeStt("do litre doodh aur ek kilo dahi", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "do litre doodh", itemWord: "doodh", qtyPhrase: "do litre", item: "milk", qty: 2, unit: "l", brand: null, confidence: 1 },
+      { raw: "ek kilo dahi", itemWord: "dahi", qtyPhrase: "ek kilo", item: "curd", qty: 1, unit: "kg", brand: null, confidence: 1 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => g.brand), [undefined, undefined]);
+  const cart = res.actions[0]!;
+  assert.ok(cart.type === "cart");
+  assert.deepEqual(cart.cart.lines.map((l) => [l.item, l.brand]), [["milk", "amul"], ["curd", undefined]]);
+});
