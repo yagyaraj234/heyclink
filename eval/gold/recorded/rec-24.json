@@ -1,0 +1,37 @@
+{
+  "id": "rec-24",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Ek kilo masoor dal, aadha kilo rajma, aur do kilo wahi wala atta. Aur didi, mujhe aath sau rupaye advance chahiye, gas cylinder ke liye.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "ek kilo masoor dal",
+        "item": "masoor-dal",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "aadha kilo rajma",
+        "item": "rajma",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "do kilo wahi wala atta",
+        "item": "atta",
+        "qty": 2,
+        "unit": "kg",
+        "brand": "aashirvaad",
+        "confidence": 1
+      }
+    ],
+    "advance": {
+      "amount": 800,
+      "reason": "gas cylinder ke liye"
+    },
+    "notes": []
+  }
+}

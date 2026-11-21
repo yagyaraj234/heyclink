@@ -1,0 +1,32 @@
+{
+  "id": "rec-05",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Aloo teen kilo... nahi nahi, do kilo kaafi hai. Aur ek darjan ande, aur ek packet bread.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "aloo ... do kilo",
+        "item": "potato",
+        "qty": 2,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "ek darjan ande",
+        "item": "eggs",
+        "qty": 1,
+        "unit": "dozen",
+        "confidence": 1
+      },
+      {
+        "raw": "ek packet bread",
+        "item": "bread",
+        "qty": 1,
+        "unit": "packet",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

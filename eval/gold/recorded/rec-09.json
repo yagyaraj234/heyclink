@@ -1,0 +1,35 @@
+{
+  "id": "rec-09",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Ek packet Tata namak, ek kilo cheeni, aur paanch sau gram chai patti. Papa ke liye cheeni kam use karni hai, yaad hai na.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "ek packet Tata namak",
+        "item": "salt",
+        "qty": 1,
+        "unit": "packet",
+        "brand": "tata",
+        "confidence": 1
+      },
+      {
+        "raw": "ek kilo cheeni",
+        "item": "sugar",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "paanch sau gram chai patti",
+        "item": "tea",
+        "qty": 500,
+        "unit": "g",
+        "confidence": 1
+      }
+    ],
+    "notes": [
+      "papa ke liye cheeni kam use karni hai"
+    ]
+  }
+}

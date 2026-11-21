@@ -1,0 +1,22 @@
+{
+  "id": "rec-26",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, mujhe pachchees sau advance chahiye, beti ki shaadi ki taiyari hai. Haan, aur ek darjan kele bhi le aana.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "ek darjan kele",
+        "item": "banana",
+        "qty": 1,
+        "unit": "dozen",
+        "confidence": 1
+      }
+    ],
+    "advance": {
+      "amount": 2500,
+      "reason": "beti ki shaadi ki taiyari hai"
+    },
+    "notes": []
+  }
+}

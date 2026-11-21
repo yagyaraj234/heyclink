@@ -1,0 +1,32 @@
+{
+  "id": "rec-11",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Dhai kilo aloo, saade teen kilo pyaaz aur das nimbu.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "dhai kilo aloo",
+        "item": "potato",
+        "qty": 2.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "saade teen kilo pyaaz",
+        "item": "onion",
+        "qty": 3.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "das nimbu",
+        "item": "lemon",
+        "qty": 10,
+        "unit": "piece",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

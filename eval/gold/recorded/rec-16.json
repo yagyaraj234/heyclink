@@ -1,0 +1,34 @@
+{
+  "id": "rec-16",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Haan haan, achha suno... woh kya hai na, kal mehmaan aa rahe hain, toh... ek kilo chicken, aur, umm, do darjan ande. Aur haan, ek packet dahi bhi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "ek kilo chicken",
+        "item": "chicken",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "do darjan ande",
+        "item": "eggs",
+        "qty": 2,
+        "unit": "dozen",
+        "confidence": 1
+      },
+      {
+        "raw": "ek packet dahi",
+        "item": "curd",
+        "qty": 1,
+        "unit": "packet",
+        "confidence": 1
+      }
+    ],
+    "notes": [
+      "kal mehmaan aa rahe hain"
+    ]
+  }
+}

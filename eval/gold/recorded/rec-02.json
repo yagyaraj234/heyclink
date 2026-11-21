@@ -1,0 +1,32 @@
+{
+  "id": "rec-02",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Bhaiya, dedh kilo pyaaz, ek kilo tamatar aur paav kilo adrak le aana.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "dedh kilo pyaaz",
+        "item": "onion",
+        "qty": 1.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "ek kilo tamatar",
+        "item": "tomato",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "paav kilo adrak",
+        "item": "ginger",
+        "qty": 0.25,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

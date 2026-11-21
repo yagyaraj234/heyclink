@@ -1,0 +1,33 @@
+{
+  "id": "rec-06",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, chawal wahi wala das kilo ka bag le lo. Toor dal do kilo, aur moong dal ek kilo.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "chawal wahi wala das kilo",
+        "item": "rice",
+        "qty": 10,
+        "unit": "kg",
+        "brand": "india-gate",
+        "confidence": 1
+      },
+      {
+        "raw": "toor dal do kilo",
+        "item": "toor-dal",
+        "qty": 2,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "moong dal ek kilo",
+        "item": "moong-dal",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

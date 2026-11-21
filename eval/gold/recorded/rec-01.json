@@ -1,0 +1,27 @@
+{
+  "id": "rec-01",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, atta khatam ho gaya hai. Wahi wala paanch kilo mangwa dena. Aur ek packet Amul butter bhi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "wahi wala paanch kilo atta",
+        "item": "atta",
+        "qty": 5,
+        "unit": "kg",
+        "brand": "aashirvaad",
+        "confidence": 1
+      },
+      {
+        "raw": "ek packet Amul butter",
+        "item": "butter",
+        "qty": 1,
+        "unit": "packet",
+        "brand": "amul",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

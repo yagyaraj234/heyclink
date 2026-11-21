@@ -1,0 +1,26 @@
+{
+  "id": "rec-23",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, Mother Dairy ka doodh nahi, wahi wala lena, teen packet. Aur ek packet dahi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "doodh ... wahi wala ... teen packet",
+        "item": "milk",
+        "qty": 3,
+        "unit": "packet",
+        "brand": "amul",
+        "confidence": 1
+      },
+      {
+        "raw": "ek packet dahi",
+        "item": "curd",
+        "qty": 1,
+        "unit": "packet",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}
