@@ -93,3 +93,14 @@ test("planActions with nothing confident and no advance yields only questions", 
   assert.deepEqual(cards.map((c) => c.type), ["question"]);
   assert.deepEqual(await planActions({ groceries: [], notes: [] }, household()), []);
 });
+
+test("buildCart prices brand ids as extraction emits them (Tata tea and dal are just 'tata')", async () => {
+  const lines: GroceryLine[] = [
+    { raw: "aadha kilo Tata Tea", item: "tea", qty: 500, unit: "g", brand: "tata", confidence: 1 },
+    { raw: "ek kilo Tata toor dal", item: "toor-dal", qty: 1, unit: "kg", brand: "tata", confidence: 1 },
+  ];
+  const cart = await buildCart(lines, household());
+  // tea 500 g / 250 g packs = 2 × tata 135 = 270 (base would be 280); toor dal 1 kg × tata 189 (base 165)
+  assert.deepEqual(cart.lines.map((l) => l.price), [270, 189]);
+  assert.equal(cart.lines[0]?.searchUrl, "https://www.swiggy.com/instamart/search?query=tata%20tea");
+});
