@@ -139,6 +139,8 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
   const store = {
     alerts,
     schema,
+    /** Runs fn in one transaction; lockedAction/lockedHousehold inside it hold their rows until it ends. */
+    tx,
     /** Ends the pool. `drop` also removes a test schema. */
     async close({ drop = false } = {}) {
       if (drop && schema) await q(`DROP SCHEMA ${schema} CASCADE`);

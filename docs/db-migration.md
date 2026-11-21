@@ -28,7 +28,7 @@ There was no deployment and there were no customers, so this was a replacement, 
 |---|---|
 | The scheduler runs on every instance | `claimOrder` locks the action row (`FOR UPDATE`) and sets `placing` in one transaction, so only one instance checks out a due order. Test: two stores on one database, `runDue` on both, and the fake Swiggy client sees one checkout. The test fails when the lock is removed. |
 | Concurrent writers | `finishOrder`, `confirmPurchase` and `confirmOrder` run in a transaction that locks the action and household rows. |
-| Read, modify, write on household history | Covered by the household row lock above. |
+| Read, modify, write in `app.ts` routes | `/review`, `/tracking`, `/approve` and `/answer` run inside `store.tx`, holding the card's row lock, then its cart's, then the household's. An edit on another instance waits instead of overwriting. STT and checkout run outside the transaction, so the order claim commits before Swiggy is called. Test: two instances answer 8 meal plans at once, and each answer is counted once. |
 | An instance dies mid-checkout | `placing` holds the claim time. Every `runDue` fails claims older than 10 minutes, so a checkout still running on another instance is left alone. The order is never retried, because the attempt may have reached Swiggy. |
 | Alert delivery on every instance | The lease is a conditional `UPDATE ... WHERE due <= now`, so only one instance sends each alert. |
 | Dropped idle connections (Neon) | `pool.on("error")` logs instead of crashing. The connect timeout is 15 s to cover a free-tier cold start. |
@@ -36,8 +36,7 @@ There was no deployment and there were no customers, so this was a replacement, 
 ## Not done, and why
 
 - **Instamart OAuth tickets and sessions stay in memory** (`src/actions/instamart.ts`). A callback that lands on a different instance fails. Instamart is staging-only. Move them to tables before running more than one instance with Instamart on.
-- **Some `app.ts` routes read a card, change it and save it across awaits.** SQLite was synchronous in one process, so that was atomic. Now two concurrent edits to the same card can lose one. It's rare: one owner, one card. The fix is a `tx` plus `lockedAction` in those routes.
-- **Optimistic `version` on households and retry with 409.** The row locks cover the paths that write history.
+- **Optimistic `version` on households and retry with 409.** Not needed: every path that writes a household or a card holds its row lock.
 
 ## Neon free tier
 

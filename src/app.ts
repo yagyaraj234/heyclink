@@ -54,6 +54,10 @@ async function withAudio<T>(req: Request, read: (path: string) => Promise<T>): P
   }
 }
 
+/** A status and JSON body, decided inside a transaction and sent after it commits. No body: the bare status. */
+type Reply = [number, unknown?];
+const send = (res: Response, [status, body]: Reply) => void (body === undefined ? res.sendStatus(status) : res.status(status).json(body));
+
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I: codes get read out loud
 
 // Signup body is client input: rebuild it field by field so nothing unvalidated reaches the household.
@@ -214,208 +218,224 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.json(await withStatus(stored, !!household && await store.isOwner(household, req.get("authorization"))));
   });
 
-  app.post("/actions/:id/review", async (req, res) => {
-    const entry = await store.action(req.params.id);
-    if (!entry || entry.card.type !== "cart") return void res.status(404).json({ error: "unknown cart" });
+  // Read → change → save routes run in a transaction holding the card's row lock (then its cart's, then the household's),
+  // so the same edit on another instance waits instead of overwriting. Network calls (STT, checkout) stay outside it.
+  app.post("/actions/:id/review", async (req, res) => send(res, await store.tx(async (): Promise<Reply> => {
+    const entry = await store.lockedAction(req.params.id);
+    if (!entry || entry.card.type !== "cart") return [404, { error: "unknown cart" }];
     const { card } = entry;
     const current = reviewOf(card.cart);
-    if (entry.done || current.reviewId !== req.body?.reviewId) return void res.status(409).json({ error: "Reload the latest cart before editing." });
+    if (entry.done || current.reviewId !== req.body?.reviewId) return [409, { error: "Reload the latest cart before editing." }];
     const edits: unknown = req.body?.edits;
-    if (!Array.isArray(edits) || !edits.length) return void res.status(400).json({ error: "Cart edits required." });
+    if (!Array.isArray(edits) || !edits.length) return [400, { error: "Cart edits required." }];
     const lines = requestsFromCart(current);
     const changed = new Set<number>();
     for (const edit of edits) {
       if (!edit || !Number.isInteger(edit.index) || !lines[edit.index] || changed.has(edit.index) ||
-          !num(edit.qty) || !oneOf(UNITS, edit.unit)) return void res.status(400).json({ error: "Invalid cart edit." });
+          !num(edit.qty) || !oneOf(UNITS, edit.unit)) return [400, { error: "Invalid cart edit." }];
       changed.add(edit.index);
       lines[edit.index] = { ...lines[edit.index]!, qty: edit.qty, unit: edit.unit, interpretation: undefined };
     }
     const household = (await store.household(entry.householdId))!;
     const next = priceCart(lines.filter(l => l.qty > 0), household, "owner");
-    if (next.held[0]) return void res.status(422).json({ error: next.held[0].reason });
+    if (next.held[0]) return [422, { error: next.held[0].reason }];
     next.held = current.held ?? [];
     card.cart = next;
     card.needsApproval = next.total > household.approvalLimit;
     await store.saveAction(entry);
-    res.json({ cart: card });
-  });
+    return [200, { cart: card }];
+  })));
 
-  app.post("/actions/:id/tracking", async (req, res) => {
-    const entry = await store.action(req.params.id);
-    if (!entry || entry.card.type !== "cart") return void res.sendStatus(404);
-    if (!await store.isOwner(entry.householdId, req.get("authorization"))) return void res.sendStatus(403);
-    if (!entry.card.cart.lines.length) return void res.status(409).json({error: "Cart has no items"});
+  app.post("/actions/:id/tracking", async (req, res) => send(res, await store.tx(async (): Promise<Reply> => {
+    const entry = await store.lockedAction(req.params.id);
+    if (!entry || entry.card.type !== "cart") return [404];
+    if (!await store.isOwner(entry.householdId, req.get("authorization"))) return [403];
+    if (!entry.card.cart.lines.length) return [409, {error: "Cart has no items"}];
     const tracking = entry.tracking ??= {};
     const { state, remindAt } = req.body ?? {};
     if (remindAt !== undefined) {
       const time = typeof remindAt === "string" ? Date.parse(remindAt) : NaN;
-      if (!(time > Date.now()) || state !== undefined) return void res.status(400).json({error: "Choose a future reminder time"});
-      if (entry.done || tracking.remindAt) return void res.status(409).json({error: "Cart already handled or reminder already set"});
-      if (!await store.alerts.hasDevice(entry.householdId)) return void res.status(409).json({error: "Enable grocery notifications first"});
+      if (!(time > Date.now()) || state !== undefined) return [400, {error: "Choose a future reminder time"}];
+      if (entry.done || tracking.remindAt) return [409, {error: "Cart already handled or reminder already set"}];
+      if (!await store.alerts.hasDevice(entry.householdId)) return [409, {error: "Enable grocery notifications first"}];
       tracking.remindAt = new Date(time).toISOString();
       await store.alerts.queue(entry.householdId, entry.card.id, "reminder", time);
     } else if (state === "ordered") {
       const cart = entry.card.cart as typeof entry.card.cart & {reviewId?: string};
-      if (cart.reviewId && req.body?.reviewId !== cart.reviewId) return void res.status(409).json({error: "Cart changed. Review the current items first."});
-      if (tracking.state === "delivered") return void res.status(409).json({error: "Already delivered"});
+      if (cart.reviewId && req.body?.reviewId !== cart.reviewId) return [409, {error: "Cart changed. Review the current items first."}];
+      if (tracking.state === "delivered") return [409, {error: "Already delivered"}];
       const source: unknown = req.body?.source;
-      if (source !== undefined && source !== "manual" && source !== "instamart") return void res.status(400).json({error: "Unknown purchase source"});
+      if (source !== undefined && source !== "manual" && source !== "instamart") return [400, {error: "Unknown purchase source"}];
       const claimed = await store.instamartClaimed(entry.card.id);
       const usingInstamart = source === "instamart" || (!source && !!claimed);
       const receipt = tracking.receipt ?? (usingInstamart ? await store.instamartReceipt(entry.card.id, cartRevision(cart)) : manualReceipt(cart));
       if (!receipt || (usingInstamart && (receipt.source !== "instamart" || receipt.receiptId !== req.body?.receiptId)) ||
           (source && receipt.source !== source) || (entry.done && !tracking.receipt)) {
-        return void res.status(409).json({error: "Review the current purchase receipt before confirming."});
+        return [409, {error: "Review the current purchase receipt before confirming."}];
       }
       tracking.receipt = receipt;
       tracking.state = "ordered";
       delete tracking.remindAt;
       await store.confirmPurchase(entry, receipt);
-      return void res.json(tracking);
+      return [200, tracking];
     } else if (state === "delivered") {
-      if (!tracking.state) return void res.status(409).json({error: "Mark the order placed first"});
+      if (!tracking.state) return [409, {error: "Mark the order placed first"}];
       tracking.state = "delivered";
       tracking.deliveredAt ??= new Date().toISOString();
-    } else return void res.status(400).json({error: "Unknown tracking update"});
+    } else return [400, {error: "Unknown tracking update"}];
     await store.saveAction(entry);
-    res.json(tracking);
-  });
+    return [200, tracking];
+  })));
 
   app.post("/actions/:id/approve", async (req, res) => {
-    const entry = await store.action(req.params.id);
-    if (!entry) return void res.status(404).json({ error: "unknown action" });
-    const { card } = entry;
-    if (card.type === "question" || card.type === "meal-plan") return void res.status(400).json({ error: `${card.type} cards are answered, not approved` });
-    if (card.type === "cart" && await store.instamartClaimed(card.id)) {
-      return void res.status(409).json({error: "Confirm the reviewed purchase using grocery tracking."});
-    }
-    // { order: "now" | ISO time } on a cart → an order card; approving that card is the explicit confirmation
-    const want: unknown = req.body?.order;
-    let scheduledFor: string | undefined;
-    if (want !== undefined) {
-      if (card.type !== "cart") return void res.status(400).json({ error: "only carts can be ordered" });
-      if (entry.done) return void res.status(409).json({ error: "cart already approved" });
-      if (want !== "now") {
-        const at = typeof want === "string" ? Date.parse(want) : NaN;
-        if (Number.isNaN(at)) return void res.status(400).json({ error: 'order must be "now" or an ISO time' });
-        scheduledFor = new Date(at).toISOString(); // UTC, so dueOrders can compare strings
+    // An immediate order comes back confirmed; placeOrder runs after the commit so its claim is committed before checkout.
+    const out = await store.tx(async (): Promise<Reply | Entry> => {
+      const entry = await store.lockedAction(req.params.id);
+      if (!entry) return [404, { error: "unknown action" }];
+      const { card } = entry;
+      if (card.type === "question" || card.type === "meal-plan") return [400, { error: `${card.type} cards are answered, not approved` }];
+      if (card.type === "cart" && await store.instamartClaimed(card.id)) {
+        return [409, {error: "Confirm the reviewed purchase using grocery tracking."}];
       }
-    }
-    if (card.type === "cart" || card.type === "order") {
-      const cart = reviewOf(card.type === "cart" ? card.cart : card.order.cart);
-      if (!cart.lines.length) return void res.status(409).json({ error: "This cart is empty." });
-      if (!entry.done && !matchesHouseholdBill(cart)) return void res.status(409).json({ error: "Review the current quantities and prices." });
-      const requiresReview = !entry.done && (entry.refreshedBill || (card.type === "order" && cart.reviewId));
-      if ((req.body?.reviewId !== undefined || requiresReview)
-          && cart.reviewId !== req.body?.reviewId) {
-        return void res.status(409).json({ error: "Cart changed. Review the current bill before confirming." });
+      // { order: "now" | ISO time } on a cart → an order card; approving that card is the explicit confirmation
+      const want: unknown = req.body?.order;
+      let scheduledFor: string | undefined;
+      if (want !== undefined) {
+        if (card.type !== "cart") return [400, { error: "only carts can be ordered" }];
+        if (entry.done) return [409, { error: "cart already approved" }];
+        if (want !== "now") {
+          const at = typeof want === "string" ? Date.parse(want) : NaN;
+          if (Number.isNaN(at)) return [400, { error: 'order must be "now" or an ISO time' }];
+          scheduledFor = new Date(at).toISOString(); // UTC, so dueOrders can compare strings
+        }
       }
-    }
-    if (card.type === "order") {
-      const confirmed = await store.confirmOrder(card.id);
-      if (confirmed.card.type !== "order") return void res.status(409).json({error: "Order changed"});
-      const order = confirmed.card.order;
-      const result = order.status === "scheduled" && !order.scheduledFor ? await placeOrder(confirmed, store, swiggy) : order;
-      return void res.json({status: "approved", order: result});
-    }
-    if (!entry.done && card.type === "cart" && want === undefined) {
-      const household = (await store.household(entry.householdId))!;
-      household.history.push({
-        at: new Date().toISOString().slice(0, 10),
-        lines: historyLines(manualReceipt(card.cart)),
-      });
-      await store.saveHousehold(household);
-    }
-    entry.done = true;
-    await store.saveAction(entry);
-    if (card.type === "cart" && want !== undefined) {
-      const order: ActionCard = { id: randomUUID(), type: "order", order: { cart: card.cart, status: "scheduled", ...(scheduledFor && { scheduledFor }) }, needsApproval: true };
-      await store.addAction({ card: order, householdId: entry.householdId, callId: entry.callId, done: false });
-      return void res.json({ status: "approved", order });
-    }
-    res.json({ status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) });
+      if (card.type === "cart" || card.type === "order") {
+        const cart = reviewOf(card.type === "cart" ? card.cart : card.order.cart);
+        if (!cart.lines.length) return [409, { error: "This cart is empty." }];
+        if (!entry.done && !matchesHouseholdBill(cart)) return [409, { error: "Review the current quantities and prices." }];
+        const requiresReview = !entry.done && (entry.refreshedBill || (card.type === "order" && cart.reviewId));
+        if ((req.body?.reviewId !== undefined || requiresReview)
+            && cart.reviewId !== req.body?.reviewId) {
+          return [409, { error: "Cart changed. Review the current bill before confirming." }];
+        }
+      }
+      if (card.type === "order") {
+        const confirmed = await store.confirmOrder(card.id);
+        if (confirmed.card.type !== "order") return [409, {error: "Order changed"}];
+        return confirmed;
+      }
+      if (!entry.done && card.type === "cart" && want === undefined) {
+        const household = (await store.lockedHousehold(entry.householdId))!;
+        household.history.push({
+          at: new Date().toISOString().slice(0, 10),
+          lines: historyLines(manualReceipt(card.cart)),
+        });
+        await store.saveHousehold(household);
+      }
+      entry.done = true;
+      await store.saveAction(entry);
+      if (card.type === "cart" && want !== undefined) {
+        const order: ActionCard = { id: randomUUID(), type: "order", order: { cart: card.cart, status: "scheduled", ...(scheduledFor && { scheduledFor }) }, needsApproval: true };
+        await store.addAction({ card: order, householdId: entry.householdId, callId: entry.callId, done: false });
+        return [200, { status: "approved", order }];
+      }
+      return [200, { status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) }];
+    });
+    if (Array.isArray(out)) return send(res, out);
+    if (out.card.type !== "order") throw new Error("Expected an order");
+    const order = out.card.order;
+    const result = order.status === "scheduled" && !order.scheduledFor ? await placeOrder(out, store, swiggy) : order;
+    res.json({status: "approved", order: result});
   });
 
   app.post("/actions/:id/answer", async (req, res) => {
-    const entry = await store.action(req.params.id);
-    if (!entry) return void res.status(404).json({ error: "unknown action" });
-    const { card, choices } = entry;
-    if (card.type === "meal-plan") {
-      if (entry.done) return void res.status(409).json({ error: "already answered" });
-      const option = MEAL_CHOICES.find((c) => c === req.body?.option);
-      if (!option) return void res.status(400).json({ error: `option must be one of ${JSON.stringify(MEAL_CHOICES)}` });
-      const household = (await store.household(entry.householdId))!;
-      const day = WEEKDAYS[new Date(`${card.plan.date}T00:00:00Z`).getUTCDay()]!; // the date is a calendar day, not an instant
-      const habit = (household.habits ??= {})[day] ??= { cook: 0, order: 0 };
-      habit[option]++;
-      await store.saveHousehold(household);
-      entry.done = true;
-      await store.saveAction(entry);
-      if (option === "order") return void res.json({ status: "answered" });
-      const saved = reviewOf(card.plan.cook.cart);
-      const cart = saved.reviewId ? saved : priceCart(requestsFromCart(saved), household);
-      const fresh: ActionCard = { id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit };
-      await store.addAction({ card: fresh, householdId: household.id, done: false });
-      for (const issue of cart.held ?? []) {
-        const question = quantityQuestion(issue, household);
-        await store.addAction({ ...question, cartId: fresh.id, householdId: household.id, done: false });
-      }
-      return void res.json({ status: "answered", cart: fresh });
-    }
-    if (card.type !== "question" || !choices) return void res.status(400).json({ error: "only questions can be answered" });
-    if (entry.done) return void res.status(409).json({ error: "already answered" });
-    let option: unknown = req.body?.option;
+    // A spoken answer is transcribed before the transaction; the transaction then checks the question didn't change meanwhile.
+    let spoken: { card: ActionCard; text: string } | undefined;
     if (Buffer.isBuffer(req.body)) {
-      if (!req.body.length) return void res.status(400).json({ error: "empty audio body" });
-      const lang = (await store.household(entry.householdId))!.cook.lang;
-      const transcript = await withAudio(req, path => stt.transcribe(path, { lang, keywords: card.options }));
-      const current = await store.action(card.id);
-      if (!current || current.done || JSON.stringify(current.card) !== JSON.stringify(card)) {
-        return void res.status(409).json({ error: "This question has changed." });
+      const before = await store.action(req.params.id);
+      if (before?.card.type === "question" && before.choices && !before.done) {
+        if (!req.body.length) return void res.status(400).json({ error: "empty audio body" });
+        const { card } = before;
+        const lang = (await store.household(before.householdId))!.cook.lang;
+        spoken = { card, text: (await withAudio(req, path => stt.transcribe(path, { lang, keywords: card.options }))).text };
       }
-      option = spokenOption(card, choices, transcript.text);
-      if (!option) return void res.status(422).json({ error: "Please tap one of the choices." });
     }
-    if (typeof option !== "string" || !card.options.includes(option)) {
-      return void res.status(400).json({ error: `option must be one of ${JSON.stringify(card.options)}` });
-    }
-    const line = choices[card.options.indexOf(option)];
-    const { callId, householdId } = entry;
-    const related = entry.cartId ? await store.action(entry.cartId) : callId && (await store.call(callId))?.entries.find(e => e.card.type === "cart" && !e.done);
-    const cartEntry = related && !related.done ? related : undefined;
-    const previous = cartEntry?.card.type === "cart" ? reviewOf(cartEntry.card.cart) : undefined;
-    const held = (previous?.held ?? []).filter(h => h.index !== entry.heldIndex);
-    if (!line) {
-      if (previous && cartEntry && held.length !== previous.held?.length) {
-        previous.held = held;
-        previous.reviewId = randomUUID();
-        await store.saveAction(cartEntry);
+    send(res, await store.tx(async (): Promise<Reply> => {
+      const entry = await store.lockedAction(req.params.id);
+      if (!entry) return [404, { error: "unknown action" }];
+      const { card, choices } = entry;
+      if (card.type === "meal-plan") {
+        if (entry.done) return [409, { error: "already answered" }];
+        const option = MEAL_CHOICES.find((c) => c === req.body?.option);
+        if (!option) return [400, { error: `option must be one of ${JSON.stringify(MEAL_CHOICES)}` }];
+        const household = (await store.lockedHousehold(entry.householdId))!;
+        const day = WEEKDAYS[new Date(`${card.plan.date}T00:00:00Z`).getUTCDay()]!; // the date is a calendar day, not an instant
+        const habit = (household.habits ??= {})[day] ??= { cook: 0, order: 0 };
+        habit[option]++;
+        await store.saveHousehold(household);
+        entry.done = true;
+        await store.saveAction(entry);
+        if (option === "order") return [200, { status: "answered" }];
+        const saved = reviewOf(card.plan.cook.cart);
+        const cart = saved.reviewId ? saved : priceCart(requestsFromCart(saved), household);
+        const fresh: ActionCard = { id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit };
+        await store.addAction({ card: fresh, householdId: household.id, done: false });
+        for (const issue of cart.held ?? []) {
+          const question = quantityQuestion(issue, household);
+          await store.addAction({ ...question, cartId: fresh.id, householdId: household.id, done: false });
+        }
+        return [200, { status: "answered", cart: fresh }];
       }
+      if (card.type !== "question" || !choices) return [400, { error: "only questions can be answered" }];
+      if (entry.done) return [409, { error: "already answered" }];
+      let option: unknown = req.body?.option;
+      if (Buffer.isBuffer(req.body)) {
+        if (!spoken || JSON.stringify(spoken.card) !== JSON.stringify(card)) return [409, { error: "This question has changed." }];
+        option = spokenOption(card, choices, spoken.text);
+        if (!option) return [422, { error: "Please tap one of the choices." }];
+      }
+      if (typeof option !== "string" || !card.options.includes(option)) {
+        return [400, { error: `option must be one of ${JSON.stringify(card.options)}` }];
+      }
+      const line = choices[card.options.indexOf(option)];
+      const { callId, householdId } = entry;
+      const relatedId = entry.cartId ?? (callId && (await store.call(callId))?.entries.find(e => e.card.type === "cart" && !e.done)?.card.id);
+      const related = relatedId ? await store.lockedAction(relatedId) : undefined;
+      const cartEntry = related && !related.done ? related : undefined;
+      const previous = cartEntry?.card.type === "cart" ? reviewOf(cartEntry.card.cart) : undefined;
+      const held = (previous?.held ?? []).filter(h => h.index !== entry.heldIndex);
+      if (!line) {
+        if (previous && cartEntry && held.length !== previous.held?.length) {
+          previous.held = held;
+          previous.reviewId = randomUUID();
+          await store.saveAction(cartEntry);
+        }
+        entry.done = true;
+        await store.saveAction(entry);
+        return [200, { status: "answered" }];
+      }
+      const lines = [...(previous ? requestsFromCart(previous) : []), { ...line, confidence: 1 }];
+      const household = (await store.household(householdId))!;
+      const next = groceryPlan({ groceries: lines, notes: [] }, household);
+      if (next.questions.length) {
+        const followUp = next.questions[0]!;
+        entry.card = { ...followUp.card, id: card.id };
+        entry.choices = followUp.choices;
+        await store.saveAction(entry);
+        return [422, { error: followUp.card.text, question: entry.card }];
+      }
+      next.cart.held = held;
+      const fresh: ActionCard = { id: cartEntry?.card.id ?? randomUUID(), type: "cart", cart: next.cart, needsApproval: next.cart.total > household.approvalLimit };
       entry.done = true;
       await store.saveAction(entry);
-      return void res.json({ status: "answered" });
-    }
-    const lines = [...(previous ? requestsFromCart(previous) : []), { ...line, confidence: 1 }];
-    const household = (await store.household(householdId))!;
-    const next = groceryPlan({ groceries: lines, notes: [] }, household);
-    if (next.questions.length) {
-      const followUp = next.questions[0]!;
-      entry.card = { ...followUp.card, id: card.id };
-      entry.choices = followUp.choices;
-      await store.saveAction(entry);
-      return void res.status(422).json({ error: followUp.card.text, question: entry.card });
-    }
-    next.cart.held = held;
-    const fresh: ActionCard = { id: cartEntry?.card.id ?? randomUUID(), type: "cart", cart: next.cart, needsApproval: next.cart.total > household.approvalLimit };
-    entry.done = true;
-    await store.saveAction(entry);
-    if (cartEntry) {
-      cartEntry.card = fresh;
-      await store.saveAction(cartEntry);
-    } else {
-      await store.addAction({ card: fresh, callId, householdId, done: false }, { first: true });
-    }
-    res.json({ status: "answered", cart: cartEntry?.card ?? fresh });
+      if (cartEntry) {
+        cartEntry.card = fresh;
+        await store.saveAction(cartEntry);
+      } else {
+        await store.addAction({ card: fresh, callId, householdId, done: false }, { first: true });
+      }
+      return [200, { status: "answered", cart: cartEntry?.card ?? fresh }];
+    }));
   });
 
   app.post("/households", async (req, res) => {
