@@ -5,7 +5,7 @@ import { buildCart, catalog } from "./cart.ts";
 const MIN_CONFIDENCE = 0.6;
 export const isUnsure = (l: GroceryLine) => l.confidence < MIN_CONFIDENCE;
 
-// ponytail: local stubs for lane 1's pending PR (extraction.ambiguous, options.recent); import theirs once it lands.
+// Shared with the pipeline (src/pipeline/process.ts imports these).
 /** A word that fits several catalog items, e.g. "चना" → kabuli-chana | kala-chana. */
 export type Ambiguous = { raw: string; qty: number; unit: Unit; candidates: string[] };
 export type ExtractionWithAmbiguous = Extraction & { ambiguous?: Ambiguous[] };
