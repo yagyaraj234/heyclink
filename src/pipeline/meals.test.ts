@@ -57,3 +57,18 @@ test("planMeals: with no habits, order on the cook's off day and cook otherwise"
   assert.equal(sunday.reason, "Lakshmi is off on Sunday");
   assert.equal(monday.suggested, "cook");
 });
+
+test("planMeals: the cook cart holds the dishes' ingredients minus pantry items in stock (onion), priced from the catalog", async () => {
+  const plan = await planMeals(h, SUNDAY, { llm: fakeLlm().llm });
+
+  // pantry: onion 1 kg (skip), atta 0 kg (buy), milk (not used)
+  assert.deepEqual(plan.cook.cart.lines.map((l) => [l.item, l.qty, l.unit]), [
+    ["moong-dal", 300, "g"],
+    ["paneer", 400, "g"],
+    ["atta", 500, "g"],
+    ["rice", 300, "g"],
+  ]);
+  assert.ok(plan.cook.cart.lines.every((l) => l.price > 0));
+  assert.equal(plan.cook.cart.lines.find((l) => l.item === "atta")?.brand, "aashirvaad");
+  assert.deepEqual(Object.keys(plan.cook.meals[1]!).sort(), ["dish", "macros", "slot", "steps"]);
+});
