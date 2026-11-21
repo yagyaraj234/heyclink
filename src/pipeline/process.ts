@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { CallInput, CallResult, Extraction, GroceryLine, Household, Lang, Llm, Stt, Transcript } from "../contracts.ts";
 import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
-import { normalizeQuantity, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
+import { normalizeQuantity, resolveBrand, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
@@ -87,18 +87,15 @@ export function sttKeywords(h: Household): string[] {
   return [...new Set([...[...Object.values(h.brands), ...items].map((w) => w.replaceAll("-", " ")), ...STT_KEYWORDS])];
 }
 
-// spoken brand word → brand id (ids from eval/recording-script.md).
-// ponytail: closed list, grow it from eval misses; a brand not listed passes through as the LLM's slug.
-const BRANDS: Record<string, string> = {
-  aashirvaad: "aashirvaad", amul: "amul", britannia: "britannia", fortune: "fortune", "india gate": "india-gate",
-  surf: "surf-excel", tata: "tata", vim: "vim", henko: "henko", hanko: "henko",
-  आशीर्वाद: "aashirvaad", अमूल: "amul", ब्रिटानिया: "britannia", फॉर्च्यून: "fortune", "इंडिया गेट": "india-gate",
-  सर्फ: "surf-excel", टाटा: "tata", विम: "vim", हेंको: "henko", हैंको: "henko",
-};
-
+/** First brand named anywhere in `text` ("हैंको डिटर्जेंट बार" → henko): longest word span first, so "india gate" beats "gate". */
 function spokenBrand(text: string): string | undefined {
-  const t = ` ${text.normalize().toLowerCase().replace(/़/g, "").replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim()} `;
-  return Object.entries(BRANDS).find(([w]) => t.includes(` ${w} `))?.[1];
+  const w = text.split(/[^\p{L}\p{M}\p{N}\u200c\u200d]+/u).filter(Boolean); // "vim-bar" → vim, bar
+  for (let n = w.length; n > 0; n--)
+    for (let i = 0; i + n <= w.length; i++) {
+      const id = resolveBrand(w.slice(i, i + n).join(" "));
+      if (id) return id;
+    }
+  return undefined;
 }
 
 /** "Tata Tea" → tea, "Amul doodh" → milk: Hindi noun phrases end in the item, so try ever-shorter tails. */
