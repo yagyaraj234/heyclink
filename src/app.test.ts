@@ -574,3 +574,41 @@ test("POST /households/:id/meal-plan defaults to tomorrow in India", async (t) =
   const card = (await (await post("/households/h1/meal-plan")).json()) as Extract<ActionCard, { type: "meal-plan" }>;
   assert.equal(card.plan.date, tomorrowIst);
 });
+
+test("approving a cart with { order } creates an order card; approving that places it now or leaves it for the scheduler", async (t) => {
+  const { base, post, close } = await serve();
+  t.after(close);
+  type OrderCard = Extract<ActionCard, { type: "order" }>;
+  const newCart = async () => ((await (await post("/calls", { transcript: case01.transcript, householdId: "h1" })).json()) as CallResult);
+
+  const call = await newCart();
+  const cartId = call.actions[0]!.id;
+  assert.equal((await post(`/actions/${cartId}/approve`, { order: "soon" })).status, 400);
+  const res = (await (await post(`/actions/${cartId}/approve`, { order: "now" })).json()) as { status: string; order: OrderCard };
+  assert.equal(res.status, "approved");
+  assert.equal(res.order.type, "order");
+  assert.equal(res.order.needsApproval, true);
+  assert.equal(res.order.order.status, "scheduled");
+  assert.equal(res.order.order.scheduledFor, undefined);
+  assert.equal(res.order.order.cart.total, 196); // case01 cart
+  assert.equal((await post(`/actions/${cartId}/approve`, { order: "now" })).status, 409); // one order per cart
+
+  // the order card joins its call, so the feed shows it
+  const after = (await (await fetch(`${base}/calls/${call.callId}`)).json()) as CallResult;
+  assert.deepEqual(after.actions.map((a) => a.type), ["cart", "advance", "order"]);
+
+  const placed = (await (await post(`/actions/${res.order.id}/approve`)).json()) as { status: string; order: OrderCard["order"] };
+  assert.equal(placed.status, "approved");
+  assert.equal(placed.order.status, "placed");
+  assert.equal(placed.order.cart.platform, "mock");
+  assert.match(placed.order.orderId ?? "", /^mock-/);
+  const again = (await (await post(`/actions/${res.order.id}/approve`)).json()) as { order: OrderCard["order"] };
+  assert.equal(again.order.orderId, placed.order.orderId); // approving twice doesn't order twice
+
+  // a time: confirmed, but placed later by runDue; the time is stored in UTC
+  const later = await newCart();
+  const sched = (await (await post(`/actions/${later.actions[0]!.id}/approve`, { order: "2026-11-23T08:00:00+05:30" })).json()) as { order: OrderCard };
+  assert.equal(sched.order.order.scheduledFor, "2026-11-23T02:30:00.000Z");
+  const confirmed = (await (await post(`/actions/${sched.order.id}/approve`)).json()) as { status: string; order: OrderCard["order"] };
+  assert.deepEqual([confirmed.status, confirmed.order.status], ["approved", "scheduled"]);
+});
