@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import pg from "pg";
 import type { InstamartIntent } from "./instamart-intent.ts";
-import { purchasedQuantity, reviewOf } from "./cart.ts";
+import { catalog, purchasedQuantity, reviewOf } from "./cart.ts";
 import type { ReviewedLine } from "./cart.ts";
 import { AUTH_SCHEMA, openHouseholdAuth } from "./auth-store.ts";
 import { ALERTS_SCHEMA, openAlerts } from "./alerts.ts";
@@ -49,6 +49,17 @@ export function manualReceipt(cart: Cart): GroceryReceipt {
 }
 export function historyLines(receipt: GroceryReceipt): Household["history"][number]["lines"] {
   return receipt.lines.map(({item,qty,unit,brand}) => ({item,qty,unit,...(brand && {brand})}));
+}
+
+/** Adds a purchase to the household's memory: its history, and each brand bought as that item's preferred brand. */
+export function recordPurchase(household: Household, receipt: GroceryReceipt) {
+  const lines = historyLines(receipt);
+  household.history.push({at: new Date().toISOString().slice(0,10), lines});
+  // only brands the catalog sells for that item: Instamart receipts and LLM slugs may name others
+  for (const {item, brand} of lines) {
+    const sold = catalog[item]?.brands;
+    if (brand && sold && Object.hasOwn(sold, brand)) household.brands[item] = brand;
+  }
 }
 
 export type Query = <R extends pg.QueryResultRow = Row>(sql: string, ...args: unknown[]) => Promise<pg.QueryResult<R>>;
@@ -311,7 +322,7 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
           // Pre-review orders already updated household history when their source cart was approved.
           if (entry.card.type === "order" && entry.card.order.status === "placed" && !current.refreshedBill && reviewOf(current.card.order.cart).reviewId) {
             const household = (await store.lockedHousehold(entry.householdId))!;
-            household.history.push({at: new Date().toISOString().slice(0,10), lines: historyLines(manualReceipt(entry.card.order.cart))});
+            recordPurchase(household, manualReceipt(entry.card.order.cart));
             await store.saveHousehold(household);
           }
           delete entry.placing;
@@ -332,7 +343,7 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
         }
         if (!current.done) {
           const household = (await store.lockedHousehold(entry.householdId))!;
-          household.history.push({at: new Date().toISOString().slice(0,10), lines: historyLines(receipt)});
+          recordPurchase(household, receipt);
           await store.saveHousehold(household);
         }
         entry.done = true;

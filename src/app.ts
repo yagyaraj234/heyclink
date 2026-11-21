@@ -17,7 +17,7 @@ import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import type { Swiggy } from "./actions/swiggy.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
-import { cartRevision, historyLines, manualReceipt } from "./actions/store.ts";
+import { cartRevision, manualReceipt, recordPurchase } from "./actions/store.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
@@ -366,10 +366,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       }
       if (!entry.done && card.type === "cart" && want === undefined) {
         const household = (await store.lockedHousehold(entry.householdId))!;
-        household.history.push({
-          at: new Date().toISOString().slice(0, 10),
-          lines: historyLines(manualReceipt(card.cart)),
-        });
+        recordPurchase(household, manualReceipt(card.cart));
         await store.saveHousehold(household);
       }
       entry.done = true;
