@@ -8,8 +8,6 @@ import type { ActionCard, CallResult, Extraction, Household, Llm, Stt } from "./
 import case01 from "../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import { createApp } from "./app.ts";
 import type { ProcessCall } from "./app.ts";
-import { planActions } from "./actions/plan.ts";
-import type { Ambiguous } from "./actions/plan.ts";
 import { processCall } from "./pipeline/process.ts";
 
 // Fakes only for the Stt/Llm ports. The Llm replies in the pipeline's extraction-schema shape.
@@ -345,23 +343,21 @@ test("POST /calls?mode=plain runs the base model without household context and s
   assert.equal((await post("/calls?mode=bogus", { transcript: "atta", householdId: "h1" })).status, 400);
 });
 
-// Stand-in for lane 1's pending PR: the real processCall, plus extraction.ambiguous and options.recent in the LLM
-// context. Delete it once lane 1 lands and pass processCall; the assertions below stay as they are.
-const pendingProcessCall = (ambiguous: Ambiguous[] = []): ProcessCall => async (input, household, ports, options = {}) => {
-  const recent = options.recent ? `Recent calls: ${JSON.stringify(options.recent)}\n` : "";
-  const llm: Llm = { json: (req) => ports.llm.json({ ...req, user: recent + req.user }) };
-  const r = await processCall(input, household, { stt: ports.stt, llm }, options);
-  const extraction = { ...r.extraction, ambiguous };
-  return { ...r, extraction, actions: await planActions(extraction, household) };
-};
-
 test("a fuzzy word becomes a which-one question; the chosen item joins the cart, Skip adds nothing", async (t) => {
-  const llm = llmReplying({ groceries: [{ raw: "do kilo atta", item: "atta", qty: 2, unit: "kg", confidence: 1 }], notes: [] });
-  const ambiguous: Ambiguous[] = [
-    { raw: "चना", qty: 1, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] },
-    { raw: "dal", qty: 500, unit: "g", candidates: ["toor-dal", "moong-dal"] },
-  ];
-  const server = createApp({ processCall: pendingProcessCall(ambiguous), stt: fakeStt(), llm }).listen(0);
+  // the LLM marks a word it can't pin to one item with item: null plus candidates (extraction schema)
+  const line = { qtyPhrase: "", confidence: 0.9, brand: null };
+  const llm: Llm = {
+    json: async <T>() => ({
+      groceries: [
+        { ...line, raw: "do kilo atta", itemWord: "atta", item: "atta", qty: 2, unit: "kg", confidence: 1 },
+        { ...line, raw: "चना", itemWord: "चना", item: null, candidates: ["kabuli-chana", "kala-chana"], qty: 1, unit: "kg" },
+        { ...line, raw: "dal", itemWord: "dal", item: null, candidates: ["toor-dal", "moong-dal"], qty: 500, unit: "g" },
+      ],
+      advance: null,
+      notes: [],
+    }) as T,
+  };
+  const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -395,8 +391,7 @@ test("POST /calls hands processCall the household's last 5 calls as recent conte
   const seen: unknown[] = [];
   const reply = llmReplying({ groceries: [{ raw: "do kilo atta", item: "atta", qty: 2, unit: "kg", confidence: 1 }], notes: [] });
   const llm: Llm = { json: async (req) => (prompts.push(req.user), reply.json(req)) };
-  const pending = pendingProcessCall();
-  const tracking: ProcessCall = (input, household, ports, options) => (seen.push(options?.recent), pending(input, household, ports, options));
+  const tracking: ProcessCall = (input, household, ports, options) => (seen.push(options?.recent), processCall(input, household, ports, options));
   const server = createApp({ processCall: tracking, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
