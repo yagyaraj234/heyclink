@@ -1,5 +1,5 @@
 // Review the IndicVoices draft labels in one sitting.
-//   node --env-file=.env eval/review.ts [--force]   → eval/out/review.md (gitignored: it quotes transcripts). Suspicious clips come first.
+//   node --env-file=.env eval/review.ts [--force]   → eval/out/review.md (gitignored: it quotes transcripts). Shows current gold (else the draft); suspicious clips first.
 //   node eval/review.ts apply                       → ok/fix clips → eval/gold/indicvoices/<id>.json; drop → removed from gold.
 // The English gloss and the flags come from one LLM call per clip, cached in eval/out/review-cache/ and keyed on transcript + draft.
 import { createHash } from "node:crypto";
@@ -89,11 +89,17 @@ async function generate() {
     process.exit(1);
   }
   const llm = openaiLlm();
-  const cases = readdirSync(DRAFTS).filter((f) => f.endsWith(".json")).sort().map((f) => readJson<Case>(`${DRAFTS}/${f}`));
+  // Show the current gold where it exists, so `apply` on an all-ok pass keeps it; flag where it departs from the draft.
+  const reviewed = existsSync(GOLD) && readdirSync(GOLD).some((f) => f.endsWith(".json"));
+  const fmtAll = (c: Case) => c.gold.groceries.map(fmtLine).join("; ") || "no lines";
   const checked = await Promise.all(
-    cases.map(async (c) => {
+    readdirSync(DRAFTS).filter((f) => f.endsWith(".json")).sort().map(async (f) => {
+      const draft = readJson<Case>(`${DRAFTS}/${f}`);
+      const gold = existsSync(`${GOLD}/${f}`) ? readJson<Case>(`${GOLD}/${f}`) : undefined;
+      const c = gold ?? draft;
       const k = await check(c, llm);
-      return { c, k, f: flags(c, k) };
+      const history = !reviewed ? [] : !gold ? [`dropped from gold (draft: ${fmtAll(draft)}); leave blank to keep it out`] : fmtAll(gold) !== fmtAll(draft) ? [`gold differs from draft (draft: ${fmtAll(draft)})`] : [];
+      return { c, k, f: [...history, ...flags(c, k)] };
     }),
   );
   checked.sort((a, b) => Number(b.f.length > 0) - Number(a.f.length > 0) || a.c.id.localeCompare(b.c.id));
