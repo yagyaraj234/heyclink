@@ -1,3 +1,5 @@
+import { installAuth } from "./actions/auth.ts";
+import type { AuthConfig } from "./actions/auth.ts";
 import { instamartRouter } from "./actions/instamart.ts";
 import type { InstamartConfig } from "./actions/instamart.ts";
 import express from "express";
@@ -28,11 +30,12 @@ export interface AppDeps {
   processCall: ProcessCall;
   stt: Stt;
   llm: Llm;
-  corsOrigin?: string; // default "*": the API has no cookies or auth
+  corsOrigin?: string;
   webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
   health?: { stt: string; llm: string }; // names only, never keys; GET /health reports them
   store: Store;
   instamart?: InstamartConfig;
+  auth?: AuthConfig;
   swiggy?: Swiggy; // places approved orders; default: labelled mock orders
 }
 
@@ -65,9 +68,9 @@ type Signup = Pick<Household, "owner" | "cook" | "goals" | "family" | "brands" |
 const str = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
 const oneOf = <T extends string>(list: readonly T[], v: unknown): v is T => list.includes(v as T);
-function parseSignup(body: unknown): Signup | string {
+function parseSignup(body: unknown, verifiedPhone?: string): Signup | string {
   const { owner, cook, approvalLimit, brands = {}, goals, headcount = 1 } = (body ?? {}) as Record<string, any>; // any: unchecked JSON, narrowed below
-  if (!str(owner?.name) || !str(owner?.phone)) return "owner needs name and phone";
+  if (!str(owner?.name) || (verifiedPhone === undefined && !str(owner?.phone))) return "owner needs name and phone";
   if (!str(cook?.name) || !oneOf(LANGS, cook?.lang) || !str(cook?.upiId) || !num(cook?.monthlySalary)) {
     return `cook needs name, lang (${LANGS.join("|")}), upiId and monthlySalary`;
   }
@@ -82,7 +85,7 @@ function parseSignup(body: unknown): Signup | string {
   }
   if (!Number.isInteger(headcount) || headcount < 1) return "headcount must be a whole number ≥ 1";
   return {
-    owner: { name: owner.name, phone: owner.phone },
+    owner: { name: owner.name, phone: verifiedPhone ?? owner.phone },
     cook: {
       name: cook.name, lang: cook.lang, upiId: cook.upiId, monthlySalary: cook.monthlySalary,
       ...(cook.phone && { phone: cook.phone }), ...(cook.offDays && { offDays: cook.offDays }),
@@ -94,7 +97,13 @@ function parseSignup(body: unknown): Signup | string {
   };
 }
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store, swiggy = mockSwiggy, instamart }: AppDeps) {
+function householdProfile(body: { name?: unknown; location?: unknown } | undefined) {
+  const { name, location } = body ?? {};
+  if (!str(name) || !str(location) || name.trim().length > 80 || location.trim().length > 120) return;
+  return { name: name.trim(), location: location.trim() };
+}
+
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store, swiggy = mockSwiggy, instamart, auth }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
   const feedTracking = async (e: Entry, owner: boolean) => {
@@ -109,7 +118,29 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const lines = receipt.lines.map(({price: _price, ...line}) => line);
     return {...tracking, receipt: {source: receipt.source, lines}};
   };
-  const withStatus = async ({call, entries}: StoredCall, owner = false) => {
+  const cookCard = (e: Entry) => {
+    const card = e.card;
+    if (card.type === "question") return card;
+    if (card.type === "cart" && (e.tracking?.state || e.tracking?.receipt)) return { id: card.id, type: "cart" as const };
+    if (card.type === "meal-plan" && e.selectedMeal) {
+      return { id: card.id, type: "shared-meal" as const, date: card.plan.date, choice: e.selectedMeal,
+        dishes: card.plan[e.selectedMeal].meals.map(({ slot, dish }) => ({ slot, dish })) };
+    }
+  };
+  const withStatus = async ({call, entries}: StoredCall, owner = false, cook = false, submitted = false) => {
+    if (cook) {
+      const feed = (await Promise.all(entries.map(async e => {
+        const card = cookCard(e);
+        return card && { card, status: statusOf(e), tracking: await feedTracking(e, false) };
+      }))).filter(e => e !== undefined);
+      return {
+        callId: call.callId, ...(submitted && { transcript: call.transcript, timings: call.timings }),
+        actions: feed.map(e => e.card),
+        status: Object.fromEntries(feed.map(e => [e.card.id, e.status])),
+        tracking: Object.fromEntries(feed.filter(e => e.tracking).map(e => [e.card.id, e.tracking])),
+      };
+    }
+
     const tracking = Object.fromEntries((await Promise.all(entries.map(async e => {
       const value = await feedTracking(e, owner);
       return value ? [[e.card.id, value]] : [];
@@ -129,17 +160,21 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     next();
   });
   app.use(express.json());
+  const access = auth && installAuth(app, store, auth, !!instamart);
+  const isOwner = (req: Request, householdId: string) =>
+    access ? access.role(req) === "owner" : store.isOwner(householdId, req.get("authorization"));
   app.use(express.raw({ type: "audio/*", limit: "25mb" }));
+
 
   app.post(["/actions/:id/approve", "/actions/:id/review"], async (req, res, next) => {
     const entry = typeof req.params.id === "string" ? await store.action(req.params.id) : undefined;
-    if (entry && await store.hasOwnerKey(entry.householdId) && !await store.isOwner(entry.householdId, req.get("authorization"))) {
+    if (!access && entry && await store.hasOwnerKey(entry.householdId) && !await store.isOwner(entry.householdId, req.get("authorization"))) {
       return void res.status(403).json({error: "Owner confirmation required"});
     }
     next();
   });
 
-  if (instamart) app.use(instamartRouter(instamart, store));
+  if (instamart) app.use(instamartRouter(instamart, store, access && (req => access.role(req) === "owner")));
   app.get("/health", (_req, res) => void res.json({ ok: true, stt: health.stt, llm: health.llm }));
 
   app.post("/calls", async (req, res) => {
@@ -151,6 +186,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const lang: Lang | undefined = LANGS.find((l) => l === (req.query.lang ?? body.lang));
     // mode=plain: the base model (no household context, STT keywords or indic pass) for side-by-side demos.
     const mode = req.query.mode ?? "harness";
+    if (mode === "plain" && access) return void res.sendStatus(404);
     if (mode !== "harness" && mode !== "plain") return void res.status(400).json({ error: "mode must be harness or plain" });
     const RECENT = 5;
     // harness only: the household's last calls, oldest → newest, so "woh wala" can refer back to them
@@ -195,27 +231,31 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       }
       await store.addAction(entry);
     }
-    res.status(201).json(await withStatus((await store.call(callId))!));
+    res.status(201).json(await withStatus((await store.call(callId))!, access?.role(req) === "owner", access?.role(req) === "cook", true));
   });
 
   app.get("/households/:id/actions", async (req, res) => {
     if (!await store.household(req.params.id)) return void res.status(404).json({ error: "unknown household" });
-    const owner = await store.isOwner(req.params.id, req.get("authorization"));
-    res.json(await Promise.all((await store.looseActions(req.params.id)).map(async e => ({card: e.card, status: statusOf(e), at: e.at, tracking: await feedTracking(e, owner)}))));
+    const owner = await isOwner(req, req.params.id);
+    const cook = access?.role(req) === "cook";
+    res.json((await Promise.all((await store.looseActions(req.params.id)).map(async e => {
+      const card = cook ? cookCard(e) : e.card;
+      return card && {card, status: statusOf(e), at: e.at, tracking: await feedTracking(e, owner)};
+    }))).filter(e => e !== undefined));
   });
 
   app.get("/calls", async (req, res) => {
     const householdId = String(req.query.householdId ?? "");
     if (!await store.household(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
-    const owner = await store.isOwner(householdId, req.get("authorization"));
-    res.json(await Promise.all((await store.calls(householdId)).map(call => withStatus(call, owner))));
+    const owner = await isOwner(req, householdId);
+    res.json(await Promise.all((await store.calls(householdId)).map(call => withStatus(call, owner, access?.role(req) === "cook"))));
   });
 
   app.get("/calls/:id", async (req, res) => {
     const stored = await store.call(req.params.id);
     if (!stored) return void res.status(404).json({ error: "unknown call" });
     const household = stored.entries[0]?.householdId;
-    res.json(await withStatus(stored, !!household && await store.isOwner(household, req.get("authorization"))));
+    res.json(await withStatus(stored, access ? access.role(req) === "owner" : !!household && await isOwner(req, household), access?.role(req) === "cook"));
   });
 
   // Read → change → save routes run in a transaction holding the card's row lock (then its cart's, then the household's),
@@ -249,7 +289,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   app.post("/actions/:id/tracking", async (req, res) => send(res, await store.tx(async (): Promise<Reply> => {
     const entry = await store.lockedAction(req.params.id);
     if (!entry || entry.card.type !== "cart") return [404];
-    if (!await store.isOwner(entry.householdId, req.get("authorization"))) return [403];
+    if (!await isOwner(req, entry.householdId)) return [403];
     if (!entry.card.cart.lines.length) return [409, {error: "Cart has no items"}];
     const tracking = entry.tracking ??= {};
     const { state, remindAt } = req.body ?? {};
@@ -374,6 +414,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         habit[option]++;
         await store.saveHousehold(household);
         entry.done = true;
+        entry.selectedMeal = option;
         await store.saveAction(entry);
         if (option === "order") return [200, { status: "answered" }];
         const saved = reviewOf(card.plan.cook.cart);
@@ -434,15 +475,25 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       } else {
         await store.addAction({ card: fresh, callId, householdId, done: false }, { first: true });
       }
-      return [200, { status: "answered", cart: cartEntry?.card ?? fresh }];
+      return [200, { status: "answered", ...(access?.role(req) !== "cook" && { cart: cartEntry?.card ?? fresh }) }];
     }));
   });
 
   app.post("/households", async (req, res) => {
-    const parsed = parseSignup(req.body);
+    const user = access?.user(req);
+    const parsed = parseSignup(req.body, user && (user.phone_number ?? ""));
     if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
     const id = randomUUID();
     const household: Household = { id, ...parsed, pantry: {}, platform: "mock", history: [] };
+    if (user) {
+      const profile = householdProfile(req.body);
+      if (!profile) return void res.status(400).json({ error: "Enter a household name and location." });
+      await store.tx(async () => {
+        await store.addHousehold(household, id);
+        await store.auth.addOwner(id, user.uid, profile);
+      });
+      return void res.status(201).json({ id });
+    }
     const ownerToken = randomBytes(32).toString("base64url");
     let cookCode: string;
     do cookCode = Array.from({ length: 6 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join("");
@@ -450,8 +501,31 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.set("cache-control", "no-store").status(201).json({ id, cookCode, ownerToken, instamartAvailable: !!instamart });
   });
 
+  if (access) app.post("/auth/claim", async (req, res) => {
+    const { uid, phone_number: phone } = access.user(req);
+    if (!phone) return void res.status(403).json({ error: "Link a verified phone in Sign-in methods before recovering a household." });
+    const { householdId, ownerToken } = req.body ?? {};
+    const profile = householdProfile(req.body);
+    if (typeof householdId !== "string" || typeof ownerToken !== "string" || !profile) {
+      return void res.status(400).json({ error: "Enter a household name and location." });
+    }
+    const claimed = await store.tx(async () => {
+      const household = await store.lockedHousehold(householdId);
+      if (!household?.owner) return false;
+      if (await store.auth.role(householdId, uid) === "owner") return true;
+      if (!await store.isOwner(householdId, "Bearer " + ownerToken)) return false;
+      await store.auth.addOwner(householdId, uid, profile);
+      household.owner.phone = phone;
+      await store.saveHousehold(household);
+      await store.revokeOwnerKey(householdId);
+      return true;
+    });
+    if (!claimed) return void res.status(404).json({ error: "The saved owner credential could not recover this household." });
+    res.status(200).json({ id: householdId });
+  });
+
   app.post("/households/:id/alerts", async (req, res) => {
-    if (!await store.isOwner(req.params.id, req.get("authorization"))) return void res.sendStatus(403);
+    if (!await isOwner(req, req.params.id)) return void res.sendStatus(403);
     const token = req.body?.token;
     if (typeof token !== "string" || !/^Expo(?:nent)?PushToken\[[a-zA-Z0-9_-]{1,200}\]$/.test(token)) {
       return void res.status(400).json({error: "Invalid Expo device token"});
@@ -492,7 +566,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.json({ status: "reset" });
   });
 
-  app.use(express.static(webDir));
+  if (!auth) app.use(express.static(webDir));
 
   app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
     res.status(err.status ?? 500).json({ error: err.message });

@@ -4,8 +4,9 @@ import pg from "pg";
 import type { InstamartIntent } from "./instamart-intent.ts";
 import { purchasedQuantity, reviewOf } from "./cart.ts";
 import type { ReviewedLine } from "./cart.ts";
+import { AUTH_SCHEMA, openHouseholdAuth } from "./auth-store.ts";
 import { ALERTS_SCHEMA, openAlerts } from "./alerts.ts";
-import type { ActionCard, CallResult, Cart, GroceryLine, Household, Unit } from "../contracts.ts";
+import type { ActionCard, CallResult, Cart, GroceryLine, Household, MealChoice, Unit } from "../contracts.ts";
 import householdJson from "../../fixtures/household.json" with { type: "json" };
 
 /** Fixed join code for the seeded fixture household, so the cook role can be demoed on h1. */
@@ -32,6 +33,7 @@ export const cartRevision = (cart: Cart) => createHash("sha256").update(JSON.str
 export type Entry = {
   card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: string; at?: string;
   refreshedBill?: boolean;
+  selectedMeal?: MealChoice;
   tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string; receipt?: GroceryReceipt };
 };
 /** call.actions is rebuilt from the action rows, so a card edited through its Entry shows up in the call. */
@@ -133,12 +135,13 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
   // Instances starting together create the tables once.
   await tx(async () => {
     await q("SELECT pg_advisory_xact_lock(7262)");
-    await q(SCHEMA + ALERTS_SCHEMA);
+    await q(SCHEMA + ALERTS_SCHEMA + AUTH_SCHEMA);
   });
 
   const alerts = openAlerts(q, tx);
   const store = {
     alerts,
+    auth: openHouseholdAuth(q, tx),
     schema,
     /** Runs fn in one transaction; lockedAction/lockedHousehold inside it hold their rows until it ends. */
     tx,
@@ -155,6 +158,7 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
       if (added && token) await q("INSERT INTO owner_keys VALUES ($1, $2)", h.id, createHash("sha256").update(token).digest("hex"));
       return added;
     }),
+    revokeOwnerKey: async (id: string) => void await q("DELETE FROM owner_keys WHERE household = $1", id),
     hasOwnerKey: async (id: string) => !!(await q("SELECT 1 FROM owner_keys WHERE household = $1", id)).rowCount,
     linkedInstamart: async (id: string) =>
       (await q<{sealed: string}>("SELECT sealed FROM instamart_links WHERE household = $1", id)).rows[0]?.sealed,
@@ -242,6 +246,7 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
         ...call, ...(usage.length && {usage}), actions: [],
       }));
     },
+    callHousehold: async (id: string) => (await q<{ household: string }>("SELECT household FROM calls WHERE id = $1", id)).rows[0]?.household,
     async call(id: string): Promise<StoredCall | undefined> {
       const row = (await q<CallRow>("SELECT data, at FROM calls WHERE id = $1", id)).rows[0];
       return row && toStored(row);
