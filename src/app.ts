@@ -4,9 +4,10 @@ import { randomInt, randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIETS, GOALS, LANGS, WEEKDAYS } from "./contracts.ts";
-import type { CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
+import { DIETS, GOALS, LANGS, MEAL_CHOICES, WEEKDAYS } from "./contracts.ts";
+import type { ActionCard, CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
+import { planMeals } from "./pipeline/meals.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
 import { openStore } from "./actions/store.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
@@ -176,7 +177,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const entry = store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
-    if (card.type === "question") return void res.status(400).json({ error: "questions are answered, not approved" });
+    if (card.type === "question" || card.type === "meal-plan") return void res.status(400).json({ error: `${card.type} cards are answered, not approved` });
     if (!entry.done && card.type === "cart") {
       const household = store.household(entry.householdId)!;
       household.history.push({
@@ -194,6 +195,23 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const entry = store.action(req.params.id);
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card, choices } = entry;
+    if (card.type === "meal-plan") {
+      if (entry.done) return void res.status(409).json({ error: "already answered" });
+      const option = MEAL_CHOICES.find((c) => c === req.body?.option);
+      if (!option) return void res.status(400).json({ error: `option must be one of ${JSON.stringify(MEAL_CHOICES)}` });
+      const household = store.household(entry.householdId)!;
+      const day = WEEKDAYS[new Date(`${card.plan.date}T00:00:00Z`).getUTCDay()]!; // the date is a calendar day, not an instant
+      const habit = (household.habits ??= {})[day] ??= { cook: 0, order: 0 };
+      habit[option]++;
+      store.saveHousehold(household);
+      entry.done = true;
+      store.saveAction(entry);
+      if (option === "order") return void res.json({ status: "answered" });
+      const { cart } = card.plan.cook; // already priced by planMeals; same approval rule as call carts
+      const fresh: ActionCard = { id: randomUUID(), type: "cart", cart, needsApproval: cart.total > household.approvalLimit };
+      store.addAction({ card: fresh, householdId: household.id, done: false });
+      return void res.json({ status: "answered", cart: fresh });
+    }
     if (card.type !== "question" || !choices) return void res.status(400).json({ error: "only questions can be answered" });
     if (entry.done) return void res.status(409).json({ error: "already answered" });
     const option: unknown = req.body?.option;
@@ -241,6 +259,19 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     const household = store.householdByCode(String(req.body?.code ?? "").trim().toUpperCase());
     if (!household) return void res.status(404).json({ error: "unknown code" });
     res.json({ householdId: household.id, role: "cook", cook: { name: household.cook.name, lang: household.cook.lang } });
+  });
+
+  app.post("/households/:id/meal-plan", async (req, res) => {
+    const household = store.household(req.params.id);
+    if (!household) return void res.status(404).json({ error: "unknown household" });
+    const DAY = 86_400_000, IST = 5.5 * 3_600_000;
+    const date: unknown = req.body?.date ?? new Date(Date.now() + IST + DAY).toISOString().slice(0, 10);
+    if (typeof date !== "string" || !/^\d{4}-\d\d-\d\d$/.test(date) || Number.isNaN(Date.parse(date))) {
+      return void res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    }
+    const card: ActionCard = { id: randomUUID(), type: "meal-plan", plan: await planMeals(household, date, { llm }), options: [...MEAL_CHOICES] };
+    store.addAction({ card, householdId: household.id, done: false });
+    res.status(201).json(card);
   });
 
   app.get("/households/:id", (req, res) => {

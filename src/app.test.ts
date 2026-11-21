@@ -519,3 +519,58 @@ test("a restart on the same database keeps households, join codes, calls and app
   assert.equal(((await (await fetch(`${after.base}/households/h1`)).json()) as Household).id, "h1");
   assert.deepEqual(await (await after.post("/join", { code: "TADKA2" })).json(), { householdId: "h1", role: "cook", cook: { name: "Lakshmi", lang: "hi" } });
 });
+
+// planMeals' LLM reply shape (src/pipeline/meals.ts): only atta to buy, so the cart is hand-priceable
+const mealMacros = { kcal: 400, proteinG: 20, carbsG: 50, fiberG: 8, fatG: 10 };
+const mealLlm: Llm = {
+  json: async <T>() => ({
+    cook: { meals: [{ slot: "lunch", dish: "Roti sabzi", macros: mealMacros, steps: ["Knead", "Roll", "Cook"], ingredients: [{ item: "atta", qty: 2, unit: "kg" }] }] },
+    order: { meals: [{ slot: "lunch", dish: "Veg thali", macros: mealMacros }] },
+  }) as T,
+};
+
+test("POST /households/:id/meal-plan returns a meal-plan card; answering it counts the habit and 'cook' returns a cart", async (t) => {
+  const { base, post, close } = await serve(fakeStt(), { llm: mealLlm });
+  t.after(close);
+  const plan = async () => {
+    const res = await post("/households/h1/meal-plan", { date: "2026-11-22" }); // a Sunday
+    assert.equal(res.status, 201);
+    return (await res.json()) as Extract<ActionCard, { type: "meal-plan" }>;
+  };
+
+  const card = await plan();
+  assert.equal(card.type, "meal-plan");
+  assert.deepEqual(card.options, ["cook", "order"]);
+  assert.equal(card.plan.date, "2026-11-22");
+  assert.equal(card.plan.suggested, "cook"); // h1: no habits, no off days
+  assert.equal(card.plan.order.meals[0]!.dish, "Veg thali");
+
+  assert.equal((await post(`/actions/${card.id}/answer`, { option: "skip" })).status, 400);
+  assert.equal((await post(`/actions/${card.id}/approve`)).status, 400);
+  const cooked = (await (await post(`/actions/${card.id}/answer`, { option: "cook" })).json()) as { status: string; cart: ActionCard };
+  assert.equal(cooked.status, "answered");
+  // atta 2 kg, household brand aashirvaad @66 = 132; under h1's 2000 limit
+  assert.ok(cooked.cart.type === "cart");
+  assert.deepEqual(cooked.cart.cart.lines.map((l) => [l.item, l.brand, l.price]), [["atta", "aashirvaad", 132]]);
+  assert.equal(cooked.cart.needsApproval, false);
+  assert.equal((await post(`/actions/${card.id}/answer`, { option: "order" })).status, 409);
+  assert.deepEqual(await (await post(`/actions/${cooked.cart.id}/approve`)).json(), { status: "approved" });
+
+  const ordered = await plan();
+  assert.deepEqual(await (await post(`/actions/${ordered.id}/answer`, { option: "order" })).json(), { status: "answered" });
+
+  const h = (await (await fetch(`${base}/households/h1`)).json()) as Household;
+  assert.deepEqual(h.habits, { sun: { cook: 1, order: 1 } });
+  assert.deepEqual(h.history.at(-1)?.lines, [{ item: "atta", qty: 2, unit: "kg", brand: "aashirvaad" }]);
+
+  assert.equal((await post("/households/nope/meal-plan", {})).status, 404);
+  assert.equal((await post("/households/h1/meal-plan", { date: "22-11-2026" })).status, 400);
+});
+
+test("POST /households/:id/meal-plan defaults to tomorrow in India", async (t) => {
+  const { post, close } = await serve(fakeStt(), { llm: mealLlm });
+  t.after(close);
+  const tomorrowIst = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(Date.now() + 86_400_000);
+  const card = (await (await post("/households/h1/meal-plan")).json()) as Extract<ActionCard, { type: "meal-plan" }>;
+  assert.equal(card.plan.date, tomorrowIst);
+});
