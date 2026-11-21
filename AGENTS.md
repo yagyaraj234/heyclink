@@ -24,7 +24,7 @@ Hackathon build. Code freeze is Sun 2026-11-22 2 PM IST. Feature freeze is Sat 1
 | 4 eval | `eval/` | dataset loaders, scorer, baselines, ablation, results table |
 | 5 web | `web/` | Vite + React thread UI (starts about 7 PM) |
 
-`src/contracts.ts` and `fixtures/` are **frozen**. If a lane needs a change, stop and ask the integrator. Never edit them inside a lane PR.
+`src/contracts.ts` and `fixtures/` are **frozen**. `fixtures/items.json` is the canonical item-id list: lexicon outputs, catalog keys and extraction `item` values must all be ids from it. If a lane needs a change, stop and ask the integrator. Never edit them inside a lane PR.
 If a lane needs another lane's function before it exists, stub it locally in your own folder behind the contract type, and note that in the PR.
 
 ## TDD (mandatory)
