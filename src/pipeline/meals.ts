@@ -99,6 +99,6 @@ export async function planMeals(household: Household, date: string, ports: { llm
     date,
     ...suggest(household, day),
     cook: { meals: out.cook.meals.map(({ slot, dish, macros, steps }) => ({ slot, dish, macros, steps })), cart: await buildCart(shoppingLines(out, household), household) },
-    order: { meals: out.order.meals.map(({ slot, dish, macros }) => ({ slot, dish, macros })) },
+    order: { meals: out.order.meals.map(({ slot, dish, macros }) => ({ slot, dish, macros, searchUrl: `https://www.swiggy.com/search?query=${encodeURIComponent(dish)}` })) },
   };
 }

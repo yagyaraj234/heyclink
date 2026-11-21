@@ -91,3 +91,19 @@ test("planMeals: diet rules, goals and headcount reach the LLM; ingredients are 
   const schema = calls[0]!.schema as any; // any: walking a JSON schema literal
   assert.deepEqual(schema.properties.cook.properties.meals.items.properties.ingredients.items.properties.item.enum, ITEMS);
 });
+
+test("planMeals: macros pass through on both options; order meals link a Swiggy search for the dish", async () => {
+  const plan = await planMeals(h, SUNDAY, { llm: fakeLlm().llm });
+
+  assert.deepEqual(plan.cook.meals.map((m) => [m.slot, m.dish, m.macros.kcal, m.macros.proteinG]), [
+    ["breakfast", "Moong dal chilla", 320, 18],
+    ["lunch", "Palak paneer with roti", 520, 28],
+    ["dinner", "Dal khichdi", 450, 20],
+  ]);
+  assert.deepEqual(plan.order.meals[1], {
+    slot: "lunch",
+    dish: "Paneer tikka bowl",
+    macros: { kcal: 600, proteinG: 32, carbsG: 40, fiberG: 8, fatG: 12 },
+    searchUrl: "https://www.swiggy.com/search?query=Paneer%20tikka%20bowl",
+  });
+});
