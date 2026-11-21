@@ -18,6 +18,7 @@
     "express": "^5.3.0"
   },
   "devDependencies": {
+    "@duckdb/node-api": "2.0.0-r.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
