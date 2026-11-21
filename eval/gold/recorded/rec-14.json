@@ -1,0 +1,35 @@
+{
+  "id": "rec-14",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Paneer do sau gram, aur ek packet Amul cheese. Aur matar aadha kilo. Aaj raat ko matar paneer banega.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "paneer do sau gram",
+        "item": "paneer",
+        "qty": 200,
+        "unit": "g",
+        "confidence": 1
+      },
+      {
+        "raw": "ek packet Amul cheese",
+        "item": "cheese",
+        "qty": 1,
+        "unit": "packet",
+        "brand": "amul",
+        "confidence": 1
+      },
+      {
+        "raw": "matar aadha kilo",
+        "item": "peas",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": [
+      "aaj raat ko matar paneer banega"
+    ]
+  }
+}

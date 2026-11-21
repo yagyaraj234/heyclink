@@ -1,0 +1,34 @@
+{
+  "id": "rec-03",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Madam ji, do gaddi dhaniya, ek gaddi pudina aur dhai sau gram hari mirch. Kal main thoda late aaungi, bacche ke school mein meeting hai.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "do gaddi dhaniya",
+        "item": "coriander",
+        "qty": 2,
+        "unit": "bunch",
+        "confidence": 1
+      },
+      {
+        "raw": "ek gaddi pudina",
+        "item": "mint",
+        "qty": 1,
+        "unit": "bunch",
+        "confidence": 1
+      },
+      {
+        "raw": "dhai sau gram hari mirch",
+        "item": "green-chilli",
+        "qty": 250,
+        "unit": "g",
+        "confidence": 1
+      }
+    ],
+    "notes": [
+      "kal thoda late aaungi, bacche ke school mein meeting hai"
+    ]
+  }
+}

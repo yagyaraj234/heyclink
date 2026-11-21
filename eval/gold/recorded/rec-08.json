@@ -1,0 +1,29 @@
+{
+  "id": "rec-08",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, saade teen sau rupaye advance chahiye the, bijli ka bill bharna hai. Aur do litre doodh, ek kilo dahi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "do litre doodh",
+        "item": "milk",
+        "qty": 2,
+        "unit": "l",
+        "confidence": 1
+      },
+      {
+        "raw": "ek kilo dahi",
+        "item": "curd",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "advance": {
+      "amount": 350,
+      "reason": "bijli ka bill bharna hai"
+    },
+    "notes": []
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "rec-28",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "te",
+  "transcript": "Akka, kandi pappu oka kilo, minapappu ara kilo, inka pavu kilo pachi mirchi kavali.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "kandi pappu oka kilo",
+        "item": "toor-dal",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "minapappu ara kilo",
+        "item": "urad-dal",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "pavu kilo pachi mirchi",
+        "item": "green-chilli",
+        "qty": 0.25,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

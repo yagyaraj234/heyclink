@@ -1,0 +1,16 @@
+{
+  "id": "rec-21",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, paanch sau rupaye advance chahiye, dawai leni hai. Aur kal subah aath baje aaungi.",
+  "gold": {
+    "groceries": [],
+    "advance": {
+      "amount": 500,
+      "reason": "dawai leni hai"
+    },
+    "notes": [
+      "kal subah aath baje aaungi"
+    ]
+  }
+}

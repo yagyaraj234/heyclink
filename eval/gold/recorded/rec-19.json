@@ -1,0 +1,32 @@
+{
+  "id": "rec-19",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, do gobhi... nahi nahi, ek hi kaafi hai. Gaajar ek kilo, aur shimla mirch paav kilo.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "do gobhi... ek hi kaafi hai",
+        "item": "cauliflower",
+        "qty": 1,
+        "unit": "piece",
+        "confidence": 1
+      },
+      {
+        "raw": "gaajar ek kilo",
+        "item": "carrot",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "shimla mirch paav kilo",
+        "item": "capsicum",
+        "qty": 0.25,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

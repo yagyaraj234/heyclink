@@ -1,0 +1,32 @@
+{
+  "id": "rec-27",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "te",
+  "transcript": "Amma, rendu kilo tomatolu, oka kilo ullipayalu, inka rendu kattalu kottimeera teesukurandi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "rendu kilo tomatolu",
+        "item": "tomato",
+        "qty": 2,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "oka kilo ullipayalu",
+        "item": "onion",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "rendu kattalu kottimeera",
+        "item": "coriander",
+        "qty": 2,
+        "unit": "bunch",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

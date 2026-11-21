@@ -1,0 +1,32 @@
+{
+  "id": "rec-25",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Saade paanch sau gram bhindi... matlab aadha kilo bhindi kar do. Aur ek kheera, do shakarkandi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "aadha kilo bhindi",
+        "item": "okra",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "ek kheera",
+        "item": "cucumber",
+        "qty": 1,
+        "unit": "piece",
+        "confidence": 1
+      },
+      {
+        "raw": "do shakarkandi",
+        "item": "sweet-potato",
+        "qty": 2,
+        "unit": "piece",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

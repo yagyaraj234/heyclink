@@ -1,0 +1,22 @@
+{
+  "id": "rec-17",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, teen hazaar advance mil sakta hai kya? Ghar ka kiraya dena hai. Aur bacchon ke liye chaar packet Maggi le aana.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "chaar packet Maggi",
+        "item": "maggi",
+        "qty": 4,
+        "unit": "packet",
+        "confidence": 1
+      }
+    ],
+    "advance": {
+      "amount": 3000,
+      "reason": "ghar ka kiraya dena hai"
+    },
+    "notes": []
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "id": "rec-07",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Haan didi, sun rahe ho? Woh sabzi wala aaj nahi aaya. Toh bhindi aadha kilo, baingan aadha kilo, aur ek lauki mangwa do. Pyaaz mat lana, abhi ghar mein hai.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "bhindi aadha kilo",
+        "item": "okra",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "baingan aadha kilo",
+        "item": "brinjal",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "ek lauki",
+        "item": "bottle-gourd",
+        "qty": 1,
+        "unit": "piece",
+        "confidence": 1
+      }
+    ],
+    "notes": [
+      "sabzi wala aaj nahi aaya",
+      "pyaaz ghar mein hai"
+    ]
+  }
+}

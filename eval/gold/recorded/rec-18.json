@@ -1,0 +1,33 @@
+{
+  "id": "rec-18",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Sooji aadha kilo, poha ek kilo, aur do packet Britannia biscuit.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "sooji aadha kilo",
+        "item": "sooji",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "poha ek kilo",
+        "item": "poha",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "do packet Britannia biscuit",
+        "item": "biscuits",
+        "qty": 2,
+        "unit": "packet",
+        "brand": "britannia",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

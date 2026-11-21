@@ -1,0 +1,32 @@
+{
+  "id": "rec-15",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, haldi ka ek packet, laal mirch powder ek packet, aur jeera sau gram. Masale sab khatam ho rahe hain.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "haldi ka ek packet",
+        "item": "turmeric",
+        "qty": 1,
+        "unit": "packet",
+        "confidence": 1
+      },
+      {
+        "raw": "laal mirch powder ek packet",
+        "item": "red-chilli-powder",
+        "qty": 1,
+        "unit": "packet",
+        "confidence": 1
+      },
+      {
+        "raw": "jeera sau gram",
+        "item": "cumin-seeds",
+        "qty": 100,
+        "unit": "g",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

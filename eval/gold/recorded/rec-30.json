@@ -1,0 +1,32 @@
+{
+  "id": "rec-30",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, karivepaku oka katta, perugu ara kilo, aur do kilo aloo bhi le aana.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "karivepaku oka katta",
+        "item": "curry-leaves",
+        "qty": 1,
+        "unit": "bunch",
+        "confidence": 1
+      },
+      {
+        "raw": "perugu ara kilo",
+        "item": "curd",
+        "qty": 0.5,
+        "unit": "kg",
+        "confidence": 1
+      },
+      {
+        "raw": "do kilo aloo",
+        "item": "potato",
+        "qty": 2,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

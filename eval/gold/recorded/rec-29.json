@@ -1,0 +1,22 @@
+{
+  "id": "rec-29",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "te",
+  "transcript": "Amma, naaku veyyi rupayalu advance kavali, intlo current bill kattali. Inka rendu packet palu teesukurandi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "rendu packet palu",
+        "item": "milk",
+        "qty": 2,
+        "unit": "packet",
+        "confidence": 1
+      }
+    ],
+    "advance": {
+      "amount": 1000,
+      "reason": "current bill kattali"
+    },
+    "notes": []
+  }
+}

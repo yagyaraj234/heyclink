@@ -1,0 +1,28 @@
+{
+  "id": "rec-10",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, Fortune ka sarson ka tel ek litre, aur ek kilo besan. Kal pakode banaungi.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "Fortune ka sarson ka tel ek litre",
+        "item": "mustard-oil",
+        "qty": 1,
+        "unit": "l",
+        "brand": "fortune",
+        "confidence": 1
+      },
+      {
+        "raw": "ek kilo besan",
+        "item": "besan",
+        "qty": 1,
+        "unit": "kg",
+        "confidence": 1
+      }
+    ],
+    "notes": [
+      "kal pakode banaungi"
+    ]
+  }
+}

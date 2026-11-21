@@ -1,0 +1,34 @@
+{
+  "id": "rec-20",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Ek litre Amul ghee aur ek packet Amul butter. Aur chhe kele.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "ek litre Amul ghee",
+        "item": "ghee",
+        "qty": 1,
+        "unit": "l",
+        "brand": "amul",
+        "confidence": 1
+      },
+      {
+        "raw": "ek packet Amul butter",
+        "item": "butter",
+        "qty": 1,
+        "unit": "packet",
+        "brand": "amul",
+        "confidence": 1
+      },
+      {
+        "raw": "chhe kele",
+        "item": "banana",
+        "qty": 6,
+        "unit": "piece",
+        "confidence": 1
+      }
+    ],
+    "notes": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "rec-13",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, mujhe dedh hazaar advance chahiye, bete ki fees bharni hai. Agle mahine ki salary se kaat lena.",
+  "gold": {
+    "groceries": [],
+    "advance": {
+      "amount": 1500,
+      "reason": "bete ki fees bharni hai"
+    },
+    "notes": [
+      "agle mahine ki salary se kaat lena"
+    ]
+  }
+}

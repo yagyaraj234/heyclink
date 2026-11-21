@@ -1,0 +1,23 @@
+{
+  "id": "rec-04",
+  "source": "self-recorded cook-style voice note (scripted, eval/recording-script.md)",
+  "lang": "hi",
+  "transcript": "Didi, ek baat bolni thi. Mujhe is mahine do hazaar advance chahiye, gaon mein maa ki tabiyat kharab hai. Aur haan, doodh wahi wala do packet le lena.",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "doodh wahi wala do packet",
+        "item": "milk",
+        "qty": 2,
+        "unit": "packet",
+        "brand": "amul",
+        "confidence": 1
+      }
+    ],
+    "advance": {
+      "amount": 2000,
+      "reason": "maa ki tabiyat kharab hai"
+    },
+    "notes": []
+  }
+}
