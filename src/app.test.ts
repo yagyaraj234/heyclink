@@ -2,13 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import type { CallResult, Household, Llm, Stt } from "./contracts.ts";
+import type { CallResult, Extraction, Household, Llm, Stt } from "./contracts.ts";
 import case01 from "../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import { createApp } from "./app.ts";
-import { processCall } from "./actions/pipeline-stub.ts";
+import { processCall } from "./pipeline/process.ts";
 
-// Fakes only for the Stt/Llm ports.
-const fakeLlm: Llm = { json: async <T>() => structuredClone(case01.gold) as T };
+// Fakes only for the Stt/Llm ports. The Llm replies in the pipeline's extraction-schema shape.
+const llmReplying = (ex: Extraction): Llm => ({
+  json: async <T>() =>
+    ({
+      groceries: ex.groceries.map((g) => ({ ...g, itemWord: g.item, qtyPhrase: "", brand: g.brand ?? null })),
+      advance: ex.advance ? { amount: ex.advance.amount, reason: null } : null,
+      notes: ex.notes,
+    }) as T,
+});
+const fakeLlm = llmReplying(case01.gold as Extraction);
 const fakeStt = (seen: { path?: string; bytes?: string } = {}): Stt => ({
   async transcribe(audioPath) {
     seen.path = audioPath;
@@ -88,17 +96,14 @@ test("unknown household, empty input and unknown action are client errors", asyn
 });
 
 test("answering a question 'yes' adds the line to the call's cart and recomputes total", async (t) => {
-  const unsureLlm: Llm = {
-    json: async <T>() =>
-      ({
-        groceries: [
-          { raw: "do gaddi dhaniya", item: "coriander", qty: 2, unit: "bunch", confidence: 1 },
-          { raw: "thoda methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.59 },
-          { raw: "woh wala tel", item: "sunflower-oil", qty: 1, unit: "l", confidence: 0.3 },
-        ],
-        notes: [],
-      }) as T,
-  };
+  const unsureLlm = llmReplying({
+    groceries: [
+      { raw: "do gaddi dhaniya", item: "coriander", qty: 2, unit: "bunch", confidence: 1 },
+      { raw: "thoda methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.59 },
+      { raw: "woh wala tel", item: "sunflower-oil", qty: 1, unit: "l", confidence: 0.3 },
+    ],
+    notes: [],
+  });
   const server = createApp({ processCall, stt: fakeStt(), llm: unsureLlm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
@@ -126,9 +131,7 @@ test("answering a question 'yes' adds the line to the call's cart and recomputes
 });
 
 test("answering 'yes' when every line was unsure creates an approvable cart card", async (t) => {
-  const llm: Llm = {
-    json: async <T>() => ({ groceries: [{ raw: "woh atta", item: "atta", qty: 2, unit: "kg", confidence: 0.4 }], notes: [] }) as T,
-  };
+  const llm = llmReplying({ groceries: [{ raw: "woh atta", item: "atta", qty: 2, unit: "kg", confidence: 0.4 }], notes: [] });
   const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
   await new Promise((r) => server.once("listening", r));
   t.after(() => server.close());
@@ -146,4 +149,23 @@ test("answering 'yes' when every line was unsure creates an approvable cart card
   assert.deepEqual(await (await post(`/actions/${res.cart.id}/approve`, {})).json(), { status: "approved" });
   const after = (await (await fetch(`${base}/calls/${call.callId}`)).json()) as CallResult;
   assert.deepEqual(after.actions.map((a) => a.type), ["cart", "question"]);
+});
+
+test("CORS: preflight and responses allow the web origin", async (t) => {
+  const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, corsOrigin: "https://web.example" }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const pre = await fetch(`${base}/calls`, {
+    method: "OPTIONS",
+    headers: { origin: "https://web.example", "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+  });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get("access-control-allow-origin"), "https://web.example");
+  assert.match(pre.headers.get("access-control-allow-methods") ?? "", /POST/);
+  assert.match(pre.headers.get("access-control-allow-headers") ?? "", /content-type/i);
+
+  const get = await fetch(`${base}/households/h1`, { headers: { origin: "https://web.example" } });
+  assert.equal(get.headers.get("access-control-allow-origin"), "https://web.example");
 });
