@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import type { CallResult, Household, Stt, Transcript } from "../src/contracts.ts";
 import { IV_DIR, RECORDED_AUDIO_DIR, readCases, readJson, type Case, type ClipMeta } from "./dataset.ts";
-import { openaiLlm, openaiStt, processCall, sarvamStt } from "./pipeline.ts";
+import { openaiLlm, openaiStt, processCall, sarvamStt, whisperCppStt } from "./pipeline.ts";
 import { scoreExtraction, summarizeLatency, type ExtractionScore } from "./score.ts";
 
 const { values: args } = parseArgs({
@@ -19,8 +19,8 @@ const { values: args } = parseArgs({
   },
 });
 
-// Cut: whisper-cpp (no runtime adapter in lane 1; first item in the eval cut order).
-const PROVIDERS: Record<string, () => Stt> = { openai: openaiStt, sarvam: sarvamStt };
+// whisper-cpp spawns whisper-cli per call (model reload each time), so its sttMs includes load time; see the adapter.
+const PROVIDERS: Record<string, () => Stt> = { openai: openaiStt, sarvam: sarvamStt, "whisper-cpp": () => whisperCppStt() };
 const MODES = ["plain", "harness"] as const;
 const OUT = "eval/out";
 const CACHE = `${OUT}/stt-cache`;
