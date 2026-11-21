@@ -1,9 +1,10 @@
+import { authEnabled } from "./auth.ts";
 import { useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { Cart, CartLine, Unit } from "../src/contracts.ts";
 import { CartTracking, type Tracking } from "./OwnerAlerts.tsx";
 import { GroceryReceipt } from "./GroceryReceipt.tsx";
-import { api, postJson, rupees } from "./api.ts";
+import { postJson, rupees } from "./api.ts";
 
 type ReviewedLine = CartLine & { pack?: { count: number; size: number; unit: Unit }; interpretation?: string };
 export type ReviewCart = Omit<Cart, "lines"> & {
@@ -48,7 +49,7 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
   const [editing, setEditing] = useState<number | null>(null);
   const [quantity, setQuantity] = useState("");
   const [useStoreLinks, setUseStoreLinks] = useState(false);
-  const connected = !!(ownerToken && instamartAvailable);
+  const connected = !!((ownerToken || authEnabled) && instamartAvailable);
   const [unit, setUnit] = useState<Unit>("g");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -83,12 +84,8 @@ export function CartReview({ cardId, cart, done, busy, onReload, onApprove, owne
     });
   }
   const providerReview = async () => {
-    if (!ownerToken || !reviewed?.reviewId) return;
-    const { url } = await api<{ url: string }>(`/actions/${cardId}/instamart`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${ownerToken}` },
-      body: JSON.stringify({ reviewId: reviewed.reviewId }),
-    });
+    if (!connected || !reviewed?.reviewId) return;
+    const { url } = await postJson<{ url: string }>(`/actions/${cardId}/instamart`, { reviewId: reviewed.reviewId }, ownerToken);
     if (!/^https?:\/\//i.test(url)) throw new Error("Could not open the Instamart review.");
     await Linking.openURL(url);
   };

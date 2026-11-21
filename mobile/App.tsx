@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, AppState, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
@@ -7,9 +7,13 @@ import * as Speech from "expo-speech";
 import { GroceryReceipt } from "./GroceryReceipt.tsx";
 import { OwnerAlerts, useCartNotification, type Tracking } from "./OwnerAlerts.tsx";
 import { CartReview, PackLines, type ReviewCart } from "./CartReview.tsx";
-import { API, api, postJson, rupees } from "./api.ts";
+import { API, ApiError, api, postJson, rupees } from "./api.ts";
+import { authEnabled, firebase, inviteCode } from "./auth.ts";
+import { JoinKitchen, ManageInvite, SignIn } from "./HouseholdAuth.tsx";
+import type { Kitchen } from "./HouseholdAuth.tsx";
+import type { User } from "@react-native-firebase/auth";
 import { RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder } from "expo-audio";
-import type { ActionCard, CallResult, Cart, Diet, Goal, Lang, Macros, MealChoice, Order, Weekday } from "../src/contracts.ts";
+import type { ActionCard, CallResult, Cart, Diet, Goal, Lang, Macros, MealChoice, MealSlot, Order, Weekday } from "../src/contracts.ts";
 
 // The seeded demo household, for skipping signup/join.
 const DEMO_HOUSEHOLD = "h1";
@@ -23,6 +27,171 @@ type OwnerSession = { id: string; ownerToken?: string; instamartAvailable?: bool
 type CookSession = { id: string; lang: Lang };
 
 export default function App() {
+  return authEnabled ? <AccountApp /> : <DemoApp />;
+}
+
+function AccountApp() {
+  const [user, setUser] = useState<User | null>();
+  const [pendingInvite, setPendingInvite] = useState<string>();
+  const [startupError, setStartupError] = useState("");
+  useEffect(() => {
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+    void firebase().then(auth => {
+      if (active) unsubscribe = auth.onIdTokenChanged(auth.getAuth(), setUser);
+    }).catch(() => { if (active) setStartupError("This build could not start sign-in."); });
+    const open = (url: string) => {
+      const code = inviteCode(url);
+      if (code && active) setPendingInvite(code);
+    };
+    const link = Linking.addEventListener("url", ({ url }) => open(url));
+    void Linking.getInitialURL().then(url => { if (url) open(url); }).catch(() => {});
+    return () => { active = false; unsubscribe?.(); link.remove(); };
+  }, []);
+  return <View style={s.screen}>
+    <StatusBar style="dark" />
+    {startupError ? <Text style={s.error}>{startupError}</Text>
+      : user === undefined ? <ActivityIndicator />
+      : user ? <HouseholdAccount key={user.uid} user={user} pendingInvite={pendingInvite}
+          clearInvite={() => setPendingInvite(undefined)} />
+      : <SignIn />}
+  </View>;
+}
+
+function HouseholdAccount({ user, pendingInvite, clearInvite }: { user: User; pendingInvite?: string; clearInvite: () => void }) {
+  const [kitchens, setKitchens] = useState<Kitchen[]>();
+  const [selectedId, setSelectedId] = useState<string>();
+  const [screen, setScreen] = useState<"create" | "join" | "invite" | "account" | "recover">();
+  const [instamartAvailable, setInstamartAvailable] = useState(false);
+  const [error, setError] = useState("");
+  const [legacy, setLegacy] = useState<OwnerSession>();
+  const alert = useCartNotification();
+  const usedAlert = useRef<string | undefined>(undefined);
+  const kitchen = kitchens?.find(item => item.id === selectedId);
+
+  async function reload() {
+    const list = await api<Kitchen[]>("/households");
+    setKitchens(list);
+    setError("");
+    return list;
+  }
+  function refresh() {
+    void reload().catch((e: Error) => setError(e.message));
+  }
+  useEffect(() => {
+    refresh();
+    void api<{ instamartAvailable: boolean }>("/auth/session").then(config =>
+      setInstamartAvailable(config.instamartAvailable)).catch(() => {});
+    void SecureStore.getItemAsync("kitchen.owner").then(raw => {
+      if (!raw) return;
+      const saved: OwnerSession = JSON.parse(raw);
+      if (saved.id && saved.ownerToken) setLegacy(saved);
+    }).catch(() => {});
+    const state = AppState.addEventListener("change", next => { if (next === "active") refresh(); });
+    return () => state.remove();
+  }, []);
+  useEffect(() => {
+    if (!alert || !kitchens || usedAlert.current === alert.requestId) return;
+    const owned = kitchens.filter(item => item.role === "owner");
+    const target = alert.householdId ? owned.find(item => item.id === alert.householdId) : owned.length === 1 ? owned[0] : undefined;
+    if (target) {
+      usedAlert.current = alert.requestId;
+      setScreen(undefined);
+      setSelectedId(target.id);
+    }
+  }, [alert, kitchens]);
+
+  function closeJoin() {
+    clearInvite();
+    setScreen(undefined);
+  }
+  function created(id: string) {
+    setScreen(undefined);
+    setSelectedId(id);
+    refresh();
+  }
+
+  if (pendingInvite || screen === "join") return <JoinKitchen key={pendingInvite ?? "scan"} initialCode={pendingInvite} onBack={closeJoin}
+    onJoin={list => { setKitchens(list); setSelectedId(undefined); closeJoin(); }} />;
+  if (screen === "account") return <SignIn user={user} onLinked={() => setScreen(undefined)} onBack={() => setScreen(undefined)} />;
+  if (screen === "invite" && kitchen?.role === "owner") return <ManageInvite kitchen={kitchen} onBack={() => setScreen(undefined)} />;
+  if (screen === "recover" && legacy) return <RecoverKitchen saved={legacy} onBack={() => setScreen(undefined)} onDone={async () => {
+    created(legacy.id);
+    setLegacy(undefined);
+    void SecureStore.deleteItemAsync("kitchen.owner").catch(() => {});
+  }} />;
+  if (screen === "create") return <>
+    <View style={s.header}><Text style={s.title}>Create household</Text>
+      <Pressable accessibilityRole="button" onPress={() => setScreen(undefined)}><Text style={s.link}>Back</Text></Pressable>
+    </View>
+    <Signup authenticated onDone={session => created(session.id)} />
+  </>;
+
+  if (kitchen) return <>
+    <View style={[s.header, { gap: 8 }]}>
+      <Pressable accessibilityRole="button" onPress={() => { setSelectedId(undefined); refresh(); }}><Text style={s.link}>Households</Text></Pressable>
+      <Text style={[s.title, { flex: 1 }]} numberOfLines={2}>{kitchen.name}</Text>
+      {kitchen.role === "owner" && <Pressable accessibilityRole="button" onPress={() => setScreen("invite")}><Text style={s.link}>Cook access</Text></Pressable>}
+    </View>
+    {kitchen.role === "owner"
+      ? <Owner key={`${kitchen.id}:${alert?.requestId ?? ""}`} alert={alert?.cartId ?? ""} householdId={kitchen.id} instamartAvailable={instamartAvailable} />
+      : <Cook key={kitchen.id} householdId={kitchen.id} lang={kitchen.lang} onAccessLost={() => {
+          setSelectedId(undefined);
+          refresh();
+        }} />}
+  </>;
+
+  return <>
+    <View style={s.header}>
+      <Text accessibilityRole="header" style={s.title}>My Households</Text>
+      <Pressable accessibilityRole="button" onPress={() => setScreen("account")}><Text style={s.link}>Sign-in methods</Text></Pressable>
+    </View>
+    <ScrollView contentContainerStyle={s.feed}>
+      {kitchens?.map(item => <Pressable key={item.id} accessibilityRole="button" onPress={() => setSelectedId(item.id)} style={[s.card, { padding: 16 }]}>
+        <Text style={s.h3}>{item.name}</Text>
+        <Text style={s.body}>{item.location}</Text>
+        <Text style={s.meta}>{item.role === "owner" ? "Owner" : "Cook"}</Text>
+      </Pressable>)}
+      {!kitchens && !error && <ActivityIndicator />}
+      {error !== "" && <><Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>
+        <Pressable accessibilityRole="button" onPress={refresh}><Text style={s.link}>Reload households</Text></Pressable></>}
+      <Pressable accessibilityRole="button" style={s.bigBtn} onPress={() => setScreen("join")}><Text style={s.bigBtnText}>Join a household</Text></Pressable>
+      <Pressable accessibilityRole="button" onPress={() => setScreen("create")}><Text style={s.link}>Create household</Text></Pressable>
+      {legacy && <Pressable accessibilityRole="button" onPress={() => setScreen("recover")}><Text style={s.link}>Recover existing household</Text></Pressable>}
+      <Pressable accessibilityRole="button" onPress={() => void firebase().then(auth => auth.signOut(auth.getAuth()))
+        .catch(() => setError("Could not sign out. Try again."))}><Text style={s.link}>Sign out</Text></Pressable>
+    </ScrollView>
+  </>;
+}
+
+function RecoverKitchen({ saved, onBack, onDone }: { saved: OwnerSession; onBack: () => void; onDone: () => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [location, setLocation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function recover() {
+    setBusy(true);
+    setError("");
+    try {
+      await postJson("/auth/claim", { householdId: saved.id, ownerToken: saved.ownerToken, name, location });
+      await onDone();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  return <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.form}>
+    <Text accessibilityRole="header" style={s.title}>Recover existing household</Text>
+    <Field label="Household name" accessibilityLabel="Household name" value={name} maxLength={80} onChangeText={setName} />
+    <Field label="Locality and city" accessibilityLabel="Locality and city" value={location} maxLength={120} onChangeText={setLocation} />
+    <Pressable accessibilityRole="button" disabled={busy || !name.trim() || !location.trim()}
+      style={[s.bigBtn, (busy || !name.trim() || !location.trim()) && s.disabled]} onPress={() => void recover()}>
+      <Text style={s.bigBtnText}>Recover household</Text>
+    </Pressable>
+    {error !== "" && <Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>}
+    <Pressable accessibilityRole="button" onPress={onBack}><Text style={s.link}>Back</Text></Pressable>
+  </ScrollView>;
+}
+
+function DemoApp() {
   const [role, setRole] = useState<Role | null>(null);
   // Kept per role so one phone can demo signup on the owner side and join on the cook side.
   const [ownerHouse, setOwnerHouse] = useState<OwnerSession | null>(null);
@@ -116,8 +285,12 @@ function Field({ label, ...props }: { label: string } & React.ComponentProps<typ
   );
 }
 
-function Signup({ onDone, onRegistered }: { onDone: (session: OwnerSession) => void; onRegistered: (session: OwnerSession) => Promise<void> }) {
-  const [f, setF] = useState({ ownerName: "", ownerPhone: "", cookName: "", upiId: "", salary: "", limit: "500", protein: "" });
+function Signup({ onDone, onRegistered, authenticated = false }: {
+  onDone: (session: OwnerSession) => void | Promise<void>;
+  onRegistered?: (session: OwnerSession) => Promise<void>;
+  authenticated?: boolean;
+}) {
+  const [f, setF] = useState({ name: "", location: "", ownerName: "", ownerPhone: "", cookName: "", upiId: "", salary: "", limit: "500", protein: "" });
   const [lang, setLang] = useState<Lang>("hi");
   const [offDays, setOffDays] = useState<Weekday[]>([]);
   const [goal, setGoal] = useState<Goal>("maintain");
@@ -133,12 +306,14 @@ function Signup({ onDone, onRegistered }: { onDone: (session: OwnerSession) => v
     setError(null);
     try {
       const session = await postJson<OwnerSession & { cookCode: string }>("/households", {
-        owner: { name: f.ownerName.trim(), phone: f.ownerPhone.trim() },
+        ...(authenticated && { name: f.name.trim(), location: f.location.trim() }),
+        owner: { name: f.ownerName.trim(), ...(!authenticated && { phone: f.ownerPhone.trim() }) },
         cook: { name: f.cookName.trim(), lang, upiId: f.upiId.trim(), monthlySalary: num(f.salary), offDays },
         approvalLimit: num(f.limit),
         goals: { goal, diet, ...(f.protein ? { proteinG: num(f.protein) } : {}) },
       });
-      await onRegistered({ id: session.id, ownerToken: session.ownerToken, instamartAvailable: session.instamartAvailable });
+      if (authenticated) return await onDone(session);
+      await onRegistered?.({ id: session.id, ownerToken: session.ownerToken, instamartAvailable: session.instamartAvailable });
       setDone(session);
     } catch (e) {
       setError((e as Error).message);
@@ -157,12 +332,15 @@ function Signup({ onDone, onRegistered }: { onDone: (session: OwnerSession) => v
       </View>
     );
   }
-  const ready = f.ownerName.trim() && f.ownerPhone.trim() && f.cookName.trim() && f.upiId.trim();
+  const ready = f.ownerName.trim() && f.cookName.trim() && f.upiId.trim() && (authenticated ? f.name.trim() && f.location.trim() : f.ownerPhone.trim());
   return (
     <ScrollView contentContainerStyle={s.form} keyboardShouldPersistTaps="handled">
       <Text style={s.h3}>You</Text>
       <Field label="Name" value={f.ownerName} onChangeText={set("ownerName")} />
-      <Field label="Phone" value={f.ownerPhone} onChangeText={set("ownerPhone")} keyboardType="phone-pad" />
+      {authenticated ? <>
+        <Field label="Household name" accessibilityLabel="Household name" value={f.name} onChangeText={set("name")} maxLength={80} placeholder="Sharma Home" />
+        <Field label="Locality and city" accessibilityLabel="Locality and city" value={f.location} onChangeText={set("location")} maxLength={120} placeholder="Indiranagar, Bengaluru" />
+      </> : <Field label="Phone" value={f.ownerPhone} onChangeText={set("ownerPhone")} keyboardType="phone-pad" />}
       <Text style={s.h3}>Your cook</Text>
       <Field label="Name" value={f.cookName} onChangeText={set("cookName")} placeholder="Lakshmi" />
       <Text style={s.label}>Language</Text>
@@ -181,9 +359,9 @@ function Signup({ onDone, onRegistered }: { onDone: (session: OwnerSession) => v
       <Field label="Protein target (g/day, optional)" value={f.protein} onChangeText={set("protein")} keyboardType="number-pad" />
       {error && <Text style={s.error}>{error}</Text>}
       <Pressable style={[s.bigBtn, (!ready || busy) && s.disabled]} disabled={!ready || busy} onPress={submit}>
-        <Text style={s.bigBtnText}>{busy ? "…" : "Sign up"}</Text>
+        <Text style={s.bigBtnText}>{busy ? "…" : authenticated ? "Create household" : "Sign up"}</Text>
       </Pressable>
-      <Pressable onPress={() => onDone({ id: DEMO_HOUSEHOLD })}><Text style={[s.link, s.centerText]}>Use the demo household</Text></Pressable>
+      {!authenticated && <Pressable onPress={() => void onDone({ id: DEMO_HOUSEHOLD })}><Text style={[s.link, s.centerText]}>Use the demo household</Text></Pressable>}
     </ScrollView>
   );
 }
@@ -228,21 +406,26 @@ const cookCopy = {
 
 type CookQuestion = Extract<ActionCard, { type: "question" }> & { prompt?: { text: string; options: string[] } };
 
-function Cook({ householdId, lang }: { householdId: string; lang: Lang }) {
+type CookCard = ActionCard | { id: string; type: "cart" } |
+  { id: string; type: "shared-meal"; date: string; choice: MealChoice; dishes: { slot: MealSlot; dish: string }[] };
+type CookFeed = Pick<Call, "callId" | "status" | "tracking"> & { actions: CookCard[] };
+type CookAction = Omit<LooseAction, "card"> & { card: CookCard };
+
+function Cook({ householdId, lang, onAccessLost }: { householdId: string; lang: Lang; onAccessLost?: () => void }) {
   const copy = cookCopy[lang];
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [text, setText] = useState("");
   const [sent, setSent] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [calls, setCalls] = useState<Call[]>([]);
-  const [loose, setLoose] = useState<LooseAction[]>([]);
+  const [calls, setCalls] = useState<CookFeed[]>([]);
+  const [loose, setLoose] = useState<CookAction[]>([]);
   const [recording, setRecording] = useState<string | null>(null);
   const held = useRef(false);
   const micTarget = useRef<string | null>(null);
   const startedAt = useRef(0);
   function readFeed() {
-    return Promise.all([api<Call[]>(`/calls?householdId=${householdId}`), api<LooseAction[]>(`/households/${householdId}/actions`)]);
+    return Promise.all([api<CookFeed[]>(`/calls?householdId=${householdId}`), api<CookAction[]>(`/households/${householdId}/actions`)]);
   }
   const load = async () => {
     const [latest, outsideCalls] = await readFeed();
@@ -258,8 +441,9 @@ function Cook({ householdId, lang }: { householdId: string; lang: Lang }) {
       try {
         const [current, outsideCalls] = await readFeed();
         if (mounted) { setCalls(current); setLoose(outsideCalls); }
-      } catch {
-        // Submission and answer failures show inline; polling retries when the device reconnects.
+      } catch (e) {
+        if (mounted && e instanceof ApiError && e.status === 404) onAccessLost?.();
+        // Polling retries when the device reconnects.
       } finally {
         loading = false;
       }
@@ -277,7 +461,7 @@ function Cook({ householdId, lang }: { householdId: string; lang: Lang }) {
         await api(`/actions/${question}/answer`, init);
         setSent(copy.answered);
       } else {
-        const call = await api<Call>(`/calls?householdId=${householdId}&lang=${lang}`, init);
+        const call = await api<CookFeed & Pick<Call, "transcript">>(`/calls?householdId=${householdId}&lang=${lang}`, init);
         setCalls((prev) => [call, ...prev.filter((c) => c.callId !== call.callId)]);
         setSent(`${copy.sent} · ${call.transcript.text}`);
         if (init.headers && typeof init.body === "string") setText("");
@@ -359,6 +543,12 @@ function Cook({ householdId, lang }: { householdId: string; lang: Lang }) {
         if (card.type === "cart" && (progress || tracking?.receipt)) return [
           <View key={card.id} style={s.card}>
             <GroceryReceipt receipt={tracking?.receipt} state={progress} cookLang={lang} />
+          </View>,
+        ];
+        if (card.type === "shared-meal") return [
+          <View key={card.id} style={s.card}>
+            <Text style={s.h3}>{lang === "hi" ? "खाने की योजना" : lang === "te" ? "భోజన ప్రణాళిక" : "Meal plan"} · {card.date}</Text>
+            {card.dishes.map(({ slot, dish }) => <Text key={slot} style={s.body}>{dish}</Text>)}
           </View>,
         ];
         if (card.type !== "question" || status !== "pending") return [];

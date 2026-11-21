@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Button, Platform, Text, View } from "react-native";
 import Constants from "expo-constants";
 import type { Receipt } from "./GroceryReceipt.tsx";
-import { api } from "./api.ts";
+import { postJson } from "./api.ts";
+import { authEnabled } from "./auth.ts";
 
 export type Tracking = { state?: "ordered" | "delivered"; remindAt?: string; instamartPending?: boolean; receipt?: Receipt };
 type Notifications = typeof import("expo-notifications");
@@ -14,21 +15,19 @@ async function notifications(): Promise<Notifications> {
   return import("expo-notifications");
 }
 
-function ownerPost<T>(path: string, token: string, body: object) {
-  return api<T>(path, { method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" }, body: JSON.stringify(body) });
-}
-
 export function useCartNotification() {
-  const [alert, setAlert] = useState<{ cartId: string; requestId: string } | null>(null);
+  const [alert, setAlert] = useState<{ cartId: string; requestId: string; householdId?: string } | null>(null);
   useEffect(() => {
     let active = true;
     let subscription: ReturnType<Notifications["addNotificationResponseReceivedListener"]> | undefined;
     void notifications().then(async n => {
       if (!active) return;
       const handle = (response: ReturnType<Notifications["getLastNotificationResponse"]>) => {
-        const id = response?.notification.request.content.data?.cartId;
+        const data = response?.notification.request.content.data;
+        const id = data?.cartId;
         if (active && response && typeof id === "string") {
-          setAlert({ cartId: id, requestId: response.notification.request.identifier });
+          setAlert({ cartId: id, requestId: response.notification.request.identifier,
+            householdId: typeof data?.householdId === "string" ? data.householdId : undefined });
           n.clearLastNotificationResponse();
         }
       };
@@ -43,7 +42,7 @@ export function useCartNotification() {
 export function OwnerAlerts({householdId, ownerToken}: {householdId: string; ownerToken?: string}) {
   const [status, setStatus] = useState("");
   const [working, setWorking] = useState(false);
-  if (!ownerToken) return null;
+  if (!ownerToken && !authEnabled) return null;
   async function enable() {
     setWorking(true);
     try {
@@ -54,7 +53,7 @@ export function OwnerAlerts({householdId, ownerToken}: {householdId: string; own
       const permission = await n.requestPermissionsAsync();
       if (!permission.granted) throw new Error("Allow notifications in your phone settings to receive grocery requests.");
       const {data} = await n.getExpoPushTokenAsync({projectId});
-      await ownerPost("/households/" + householdId + "/alerts", ownerToken!, {token: data});
+      await postJson("/households/" + householdId + "/alerts", {token: data}, ownerToken);
       setStatus("Grocery alerts enabled");
     } catch (e) { setStatus(e instanceof Error ? e.message : "Could not enable grocery alerts"); }
     finally { setWorking(false); }
@@ -70,12 +69,12 @@ export function CartTracking({cartId, ownerToken, tracking, reviewId, source, re
 }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
-  if (!ownerToken) return null;
+  if (!ownerToken && !authEnabled) return null;
   async function update(body: object) {
     setWorking(true);
     setError("");
     try {
-      await ownerPost("/actions/" + cartId + "/tracking", ownerToken!, {...body, reviewId});
+      await postJson("/actions/" + cartId + "/tracking", {...body, reviewId}, ownerToken);
       await onReload();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not update cart");
