@@ -485,6 +485,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         const followUp = next.questions[0]!;
         entry.card = { ...followUp.card, id: card.id };
         entry.choices = followUp.choices;
+        if (followUp.word) entry.word = wordKey(followUp.word);
+        else delete entry.word; // the follow-up may ask about another line; don't vote this word onto it
         await store.saveAction(entry);
         return [422, { error: followUp.card.text, question: entry.card }];
       }
