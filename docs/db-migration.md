@@ -20,7 +20,7 @@ There was no deployment and there were no customers, so this was a replacement, 
 | `at` stays ISO text, compared with `COLLATE "C"` | Same ordering as SQLite, with no conversion code. |
 | `seq bigint GENERATED ALWAYS AS IDENTITY` | Replaces `rowid` for newest-first ordering. |
 | One schema SQL string, no numbered migrations | There's nothing to upgrade yet. Add migrations with the first schema change after launch. |
-| Tests use a throwaway schema per store on `TEST_DATABASE_URL` | Files run in parallel without sharing state. CI runs a `postgres:17` service. |
+| Tests use a throwaway schema per store on `TEST_DATABASE_URL` | Files run in parallel without sharing state. CI runs a `postgres:17` service. Schemas are named `t_<ms>_<id>`, and `drop-old-schemas.ts` (the `pnpm test` global setup) drops ones over an hour old. It doesn't drop newer ones, because another worktree may be testing against the same database. |
 
 ## Multiple instances
 
@@ -38,7 +38,6 @@ There was no deployment and there were no customers, so this was a replacement, 
 - **Instamart OAuth tickets and sessions stay in memory** (`src/actions/instamart.ts`). A callback that lands on a different instance fails. Instamart is staging-only. Move them to tables before running more than one instance with Instamart on.
 - **Some `app.ts` routes read a card, change it and save it across awaits.** SQLite was synchronous in one process, so that was atomic. Now two concurrent edits to the same card can lose one. It's rare: one owner, one card. The fix is a `tx` plus `lockedAction` in those routes.
 - **Optimistic `version` on households and retry with 409.** The row locks cover the paths that write history.
-- **Test schemas aren't dropped.** They're harmless in a local or CI database.
 
 ## Neon free tier
 
