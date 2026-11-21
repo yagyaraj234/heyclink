@@ -479,8 +479,9 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
         notes.push(p.variant.displayName + " delivery estimate: " + p.variant.sla.value + " " + p.variant.sla.unit);
     }
     if (!picked.length) fail(400, "Choose at least one pack.");
-    // ponytail: a lease that outlives 2 minutes is presumed dead and can be taken; every provider call times out at 15 s.
-    if (!(await store.claimInstamartState(lease(s), "", Date.now() + 120_000)))
+    // A lease older than 2 minutes is presumed dead and can be taken; every provider call times out at 15 s.
+    const holder = random();
+    if (!(await store.claimInstamartState(lease(s), holder, Date.now() + 120_000)))
       fail(409, "Another household cart update is in progress. Retry after it finishes.");
     try {
       const client = await clientOf(s.token!, s.until);
@@ -505,7 +506,7 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
       await store.saveInstamartIntent(s.cartId, adjusted);
       await invoice(s, cart, adjusted, res, saveSession);
     } finally {
-      await store.takeInstamartState(lease(s));
+      await store.takeInstamartState(lease(s), holder);
     }
   });
   router.post("/instamart/continue", async (req, res) => {
