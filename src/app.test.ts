@@ -254,3 +254,33 @@ test("POST /households/:id/reset restores the fixture household and drops its ca
   }
   assert.equal((await post("/households/nope/reset")).status, 404);
 });
+
+test("GET /calls and /calls/:id carry a per-action status map that survives reload", async (t) => {
+  const llm = llmReplying({
+    groceries: [
+      { raw: "do gaddi dhaniya", item: "coriander", qty: 2, unit: "bunch", confidence: 1 },
+      { raw: "thoda methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.4 },
+    ],
+    advance: { amount: 500 },
+    notes: [],
+  });
+  const server = createApp({ processCall, stt: fakeStt(), llm }).listen(0);
+  await new Promise((r) => server.once("listening", r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown) =>
+    fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  type WithStatus = CallResult & { status: Record<string, string> };
+  const created = (await (await post("/calls", { transcript: "x", householdId: "h1" })).json()) as WithStatus;
+  const [cart, advance, question] = created.actions;
+  assert.deepEqual(created.actions.map((a) => a.type), ["cart", "advance", "question"]);
+  assert.deepEqual(created.status, { [cart!.id]: "pending", [advance!.id]: "pending", [question!.id]: "pending" });
+
+  await post(`/actions/${advance!.id}/approve`, {});
+  await post(`/actions/${question!.id}/answer`, { option: "No, skip" });
+  const want = { [cart!.id]: "pending", [advance!.id]: "approved", [question!.id]: "answered" };
+  assert.deepEqual(((await (await fetch(`${base}/calls/${created.callId}`)).json()) as WithStatus).status, want);
+  const list = (await (await fetch(`${base}/calls?householdId=h1`)).json()) as WithStatus[];
+  assert.deepEqual(list[0]!.status, want);
+});
