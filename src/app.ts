@@ -14,6 +14,7 @@ import { matchesHouseholdBill, priceCart, requestsFromCart, reviewOf } from "./a
 import { groceryPlan, quantityQuestion, spokenOption } from "./actions/plan.ts";
 import { planMeals } from "./pipeline/meals.ts";
 import { wordKey } from "./pipeline/process.ts";
+import type { PipelineExtraction } from "./pipeline/process.ts";
 import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import type { Swiggy } from "./actions/swiggy.ts";
@@ -121,7 +122,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   };
   const cookCard = (e: Entry) => {
     const card = e.card;
-    if (card.type === "question") return card;
+    if (card.type === "question") return e.remember === undefined ? card : undefined; // Remember cards are the owner's
     if (card.type === "cart" && (e.tracking?.state || e.tracking?.receipt)) return { id: card.id, type: "cart" as const };
     if (card.type === "meal-plan" && e.selectedMeal) {
       return { id: card.id, type: "shared-meal" as const, date: card.plan.date, choice: e.selectedMeal,
@@ -233,6 +234,11 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         if (question?.word) entry.word = wordKey(question.word);
       }
       await store.addAction(entry);
+    }
+    // after the grocery questions, so the pairing above stays positional
+    for (const fact of (extraction as PipelineExtraction).remember ?? []) {
+      const card: ActionCard = { id: randomUUID(), type: "question", text: `Remember for future orders and meal plans: "${fact}"?`, options: ["Remember", "Ignore"] };
+      await store.addAction({ card, callId, householdId, done: false, remember: fact });
     }
     res.status(201).json(await withStatus((await store.call(callId))!, access?.role(req) === "owner", access?.role(req) === "cook", true));
   });
@@ -404,6 +410,22 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const entry = await store.lockedAction(req.params.id);
       if (!entry) return [404, { error: "unknown action" }];
       const { card, choices } = entry;
+      if (entry.remember !== undefined) {
+        if (entry.done) return [409, { error: "already answered" }];
+        const owner = access ? access.role(req) === "owner"
+          : !await store.hasOwnerKey(entry.householdId) || await store.isOwner(entry.householdId, req.get("authorization"));
+        if (!owner) return [403, { error: "Owner confirmation required" }];
+        const option: unknown = req.body?.option;
+        if (option !== "Remember" && option !== "Ignore") return [400, { error: 'option must be "Remember" or "Ignore"' }];
+        if (option === "Remember") {
+          const household = (await store.lockedHousehold(entry.householdId))!;
+          if (!household.family.dietRules.includes(entry.remember)) household.family.dietRules.push(entry.remember);
+          await store.saveHousehold(household);
+        }
+        entry.done = true;
+        await store.saveAction(entry);
+        return [200, { status: "answered" }];
+      }
       if (card.type === "meal-plan") {
         if (entry.done) return [409, { error: "already answered" }];
         const option = MEAL_CHOICES.find((c) => c === req.body?.option);

@@ -34,6 +34,7 @@ export type Entry = {
   card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: string; at?: string;
   refreshedBill?: boolean;
   word?: string; // wordKey of the spoken word a which-one question settles
+  remember?: string; // a Remember card: the household fact the owner may add to dietRules
   selectedMeal?: MealChoice;
   tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string; receipt?: GroceryReceipt };
 };

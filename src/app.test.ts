@@ -1653,3 +1653,29 @@ test("a word 3 households agree on resolves for every household of that language
   assert.deepEqual(resolved.cart.lines.map((l) => l.item), ["kala-chana"]);
   assert.deepEqual((await say(telugu)).actions.map((x) => x.type), ["question"]);
 });
+
+test("a lasting fact the cook mentions becomes a Remember card; only the owner's Remember adds it to diet rules", async (t) => {
+  const llm: Llm = { json: async <T>() => ({ groceries: [], advance: null, notes: [], remember: ["Papa: no sugar", "Beta: no mushrooms"] }) as T };
+  const { base, post, close } = await serve(fakeStt(), { llm });
+  t.after(close);
+
+  const call = (await (await post("/calls", { transcript: "papa ab cheeni nahi khayenge", householdId: "h1" })).json()) as CallResult;
+  const [sugar, mushrooms] = call.actions;
+  assert.ok(sugar?.type === "question" && mushrooms?.type === "question");
+  assert.deepEqual(sugar.options, ["Remember", "Ignore"]);
+  assert.match(sugar.text, /Papa: no sugar/);
+  assert.deepEqual(await (await post(`/actions/${sugar.id}/answer`, { option: "Remember" })).json(), { status: "answered" });
+  assert.deepEqual(await (await post(`/actions/${mushrooms.id}/answer`, { option: "Ignore" })).json(), { status: "answered" });
+  assert.equal((await post(`/actions/${sugar.id}/answer`, { option: "Remember" })).status, 409);
+  const h = (await (await fetch(`${base}/households/h1`)).json()) as Household;
+  assert.deepEqual(h.family.dietRules, ["no onion on Tuesdays", "papa diabetic: low sugar", "Papa: no sugar"]);
+
+  const { id, ownerToken } = (await (await post("/households", signup)).json()) as { id: string; ownerToken: string };
+  const theirs = (await (await post("/calls", { transcript: "papa ab cheeni nahi khayenge", householdId: id })).json()) as CallResult;
+  const card = theirs.actions[0]!;
+  assert.equal((await post(`/actions/${card.id}/answer`, { option: "Remember" })).status, 403);
+  const owner = await fetch(`${base}/actions/${card.id}/answer`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ownerToken}` }, body: JSON.stringify({ option: "Remember" }),
+  });
+  assert.equal(owner.status, 200);
+});
