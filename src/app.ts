@@ -15,7 +15,7 @@ import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import type { Swiggy } from "./actions/swiggy.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
-import { openStore } from "./actions/store.ts";
+import { cartRevision, manualReceipt, openStore } from "./actions/store.ts";
 import householdJson from "../fixtures/household.json" with { type: "json" };
 import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
@@ -93,9 +93,25 @@ function parseSignup(body: unknown): Signup | string {
 export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist"), health = { stt: "unknown", llm: "unknown" }, store = openStore(), swiggy = mockSwiggy, instamart }: AppDeps) {
   // CallResult (frozen) has no done flag, so responses add one status per action id.
   const statusOf = (e: Entry) => (!e.done ? "pending" : e.card.type === "question" || e.card.type === "meal-plan" ? "answered" : "approved");
-  const withStatus = ({ call, entries }: StoredCall) => ({ ...call,
-    ...(entries.some(e => e.tracking) && {tracking: Object.fromEntries(entries.filter(e => e.tracking).map(e => [e.card.id,e.tracking]))}),
-    status: Object.fromEntries(entries.map((e) => [e.card.id, statusOf(e)])) });
+  const feedTracking = (e: Entry, owner: boolean) => {
+    const tracking = e.tracking;
+    let receipt = tracking?.receipt;
+    if (!e.done && e.card.type === "cart" && store.instamartClaimed(e.card.id)) {
+      receipt = store.instamartReceipt(e.card.id, cartRevision(e.card.cart));
+      if (!receipt) return owner ? {...tracking, instamartPending: true} : tracking;
+    }
+    if (!receipt) return tracking;
+    if (owner) return {...tracking, receipt};
+    const lines = receipt.lines.map(({price: _price, ...line}) => line);
+    return {...tracking, receipt: {source: receipt.source, lines}};
+  };
+  const withStatus = ({call, entries}: StoredCall, owner = false) => {
+    const tracking = Object.fromEntries(entries.flatMap(e => {
+      const value = feedTracking(e, owner);
+      return value ? [[e.card.id, value]] : [];
+    }));
+    return {...call, ...(Object.keys(tracking).length && {tracking}), status: Object.fromEntries(entries.map(e => [e.card.id, statusOf(e)]))};
+  };
 
   const app = express();
   app.use((req, res, next) => {
@@ -180,19 +196,22 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
 
   app.get("/households/:id/actions", (req, res) => {
     if (!store.household(req.params.id)) return void res.status(404).json({ error: "unknown household" });
-    res.json(store.looseActions(req.params.id).map((e) => ({ card: e.card, status: statusOf(e), at: e.at, ...(e.tracking && {tracking: e.tracking}) })));
+    const owner = store.isOwner(req.params.id, req.get("authorization"));
+    res.json(store.looseActions(req.params.id).map(e => ({card: e.card, status: statusOf(e), at: e.at, tracking: feedTracking(e, owner)})));
   });
 
   app.get("/calls", (req, res) => {
     const householdId = String(req.query.householdId ?? "");
     if (!store.household(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
-    res.json(store.calls(householdId).map(withStatus));
+    const owner = store.isOwner(householdId, req.get("authorization"));
+    res.json(store.calls(householdId).map(call => withStatus(call, owner)));
   });
 
   app.get("/calls/:id", (req, res) => {
     const stored = store.call(req.params.id);
     if (!stored) return void res.status(404).json({ error: "unknown call" });
-    res.json(withStatus(stored));
+    const household = stored.entries[0]?.householdId;
+    res.json(withStatus(stored, !!household && store.isOwner(household, req.get("authorization"))));
   });
 
   app.post("/actions/:id/review", (req, res) => {
@@ -208,12 +227,11 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     for (const edit of edits) {
       if (!edit || !Number.isInteger(edit.index) || !lines[edit.index] || changed.has(edit.index) ||
           !num(edit.qty) || !oneOf(UNITS, edit.unit)) return void res.status(400).json({ error: "Invalid cart edit." });
-      if (edit.unit === "kg" && edit.qty > 2) return void res.status(422).json({ error: "Household limit is 2 kg per item." });
       changed.add(edit.index);
       lines[edit.index] = { ...lines[edit.index]!, qty: edit.qty, unit: edit.unit, interpretation: undefined };
     }
     const household = store.household(entry.householdId)!;
-    const next = priceCart(lines.filter(l => l.qty > 0), household);
+    const next = priceCart(lines.filter(l => l.qty > 0), household, "owner");
     if (next.held[0]) return void res.status(422).json({ error: next.held[0].reason });
     next.held = current.held ?? [];
     card.cart = next;
@@ -240,9 +258,19 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const cart = entry.card.cart as typeof entry.card.cart & {reviewId?: string};
       if (cart.reviewId && req.body?.reviewId !== cart.reviewId) return void res.status(409).json({error: "Cart changed. Review the current items first."});
       if (tracking.state === "delivered") return void res.status(409).json({error: "Already delivered"});
+      const source: unknown = req.body?.source;
+      if (source !== undefined && source !== "manual" && source !== "instamart") return void res.status(400).json({error: "Unknown purchase source"});
+      const claimed = store.instamartClaimed(entry.card.id);
+      const usingInstamart = source === "instamart" || (!source && !!claimed);
+      const receipt = tracking.receipt ?? (usingInstamart ? store.instamartReceipt(entry.card.id, cartRevision(cart)) : manualReceipt(cart));
+      if (!receipt || (usingInstamart && (receipt.source !== "instamart" || receipt.receiptId !== req.body?.receiptId)) ||
+          (source && receipt.source !== source) || (entry.done && !tracking.receipt)) {
+        return void res.status(409).json({error: "Review the current purchase receipt before confirming."});
+      }
+      tracking.receipt = receipt;
       tracking.state = "ordered";
       delete tracking.remindAt;
-      store.confirmPurchase(entry);
+      store.confirmPurchase(entry, receipt);
       return void res.json(tracking);
     } else if (state === "delivered") {
       if (!tracking.state) return void res.status(409).json({error: "Mark the order placed first"});
@@ -258,6 +286,9 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
     if (card.type === "question" || card.type === "meal-plan") return void res.status(400).json({ error: `${card.type} cards are answered, not approved` });
+    if (card.type === "cart" && store.instamartClaimed(card.id)) {
+      return void res.status(409).json({error: "Confirm the reviewed purchase using grocery tracking."});
+    }
     // { order: "now" | ISO time } on a cart → an order card; approving that card is the explicit confirmation
     const want: unknown = req.body?.order;
     let scheduledFor: string | undefined;
@@ -274,10 +305,18 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const cart = reviewOf(card.type === "cart" ? card.cart : card.order.cart);
       if (!cart.lines.length) return void res.status(409).json({ error: "This cart is empty." });
       if (!entry.done && !matchesHouseholdBill(cart)) return void res.status(409).json({ error: "Review the current quantities and prices." });
-      if ((req.body?.reviewId !== undefined || (card.type === "order" && cart.reviewId && !entry.done))
+      const requiresReview = !entry.done && (entry.refreshedBill || (card.type === "order" && cart.reviewId));
+      if ((req.body?.reviewId !== undefined || requiresReview)
           && cart.reviewId !== req.body?.reviewId) {
         return void res.status(409).json({ error: "Cart changed. Review the current bill before confirming." });
       }
+    }
+    if (card.type === "order") {
+      const confirmed = store.confirmOrder(card.id);
+      if (confirmed.card.type !== "order") return void res.status(409).json({error: "Order changed"});
+      const order = confirmed.card.order;
+      const result = order.status === "scheduled" && !order.scheduledFor ? await placeOrder(confirmed, store, swiggy) : order;
+      return void res.json({status: "approved", order: result});
     }
     if (!entry.done && card.type === "cart" && want === undefined) {
       const household = store.household(entry.householdId)!;
@@ -293,11 +332,6 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const order: ActionCard = { id: randomUUID(), type: "order", order: { cart: card.cart, status: "scheduled", ...(scheduledFor && { scheduledFor }) }, needsApproval: true };
       store.addAction({ card: order, householdId: entry.householdId, callId: entry.callId, done: false });
       return void res.json({ status: "approved", order });
-    }
-    if (card.type === "order") {
-      // no time = place now; a time = runDue places it once due
-      if (card.order.status === "scheduled" && !card.order.scheduledFor && !entry.placing) await placeOrder(entry, store, swiggy);
-      return void res.json({ status: "approved", order: card.order });
     }
     res.json({ status: "approved", ...(card.type === "advance" && card.upiUrl && { upiUrl: card.upiUrl }) });
   });

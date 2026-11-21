@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Button, Platform, Text, View } from "react-native";
 import Constants from "expo-constants";
+import type { Receipt } from "./GroceryReceipt.tsx";
 import { api } from "./api.ts";
 
-export type Tracking = { state?: "ordered" | "delivered"; remindAt?: string };
+export type Tracking = { state?: "ordered" | "delivered"; remindAt?: string; instamartPending?: boolean; receipt?: Receipt };
 type Notifications = typeof import("expo-notifications");
 
 async function notifications(): Promise<Notifications> {
@@ -64,8 +65,8 @@ export function OwnerAlerts({householdId, ownerToken}: {householdId: string; own
   </View>;
 }
 
-export function CartTracking({cartId, ownerToken, tracking, reviewId, onReload}: {
-  cartId: string; ownerToken?: string; tracking?: Tracking; reviewId?: string; onReload: () => Promise<void>;
+export function CartTracking({cartId, ownerToken, tracking, reviewId, source, receiptId, onReload}: {
+  cartId: string; ownerToken?: string; tracking?: Tracking; reviewId?: string; source?: Receipt["source"]; receiptId?: string; onReload: () => Promise<void>;
 }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -76,7 +77,10 @@ export function CartTracking({cartId, ownerToken, tracking, reviewId, onReload}:
     try {
       await ownerPost("/actions/" + cartId + "/tracking", ownerToken!, {...body, reviewId});
       await onReload();
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not update cart"); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update cart");
+      await onReload();
+    }
     finally { setWorking(false); }
   }
   function remind() {
@@ -88,7 +92,8 @@ export function CartTracking({cartId, ownerToken, tracking, reviewId, onReload}:
   return <View>
     {tracking?.state === "delivered" ? <Text>Delivered</Text> : tracking?.state === "ordered" ?
       <Button title="Mark delivered" disabled={working} onPress={() => void update({state:"delivered"})} /> : <>
-        <Button title="I bought these items" disabled={working} onPress={() => void update({state:"ordered"})} />
+        {source && <Button title={source === "instamart" ? "I bought the reviewed Instamart items" : "I bought these items"}
+          disabled={working} onPress={() => void update({state: "ordered", source, ...(source === "instamart" && {receiptId})})} />}
         {tracking?.remindAt ? <Text>Reminder set for {new Date(tracking.remindAt).toLocaleString()}</Text> :
           <Button title={new Date().getHours() < 18 ? "Remind me at 6 PM today" : "Remind me at 6 PM tomorrow"} disabled={working} onPress={remind} />}
       </>}

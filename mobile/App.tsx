@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
 import * as Speech from "expo-speech";
+import { GroceryReceipt } from "./GroceryReceipt.tsx";
 import { OwnerAlerts, useCartNotification, type Tracking } from "./OwnerAlerts.tsx";
 import { CartReview, PackLines, type ReviewCart } from "./CartReview.tsx";
 import { API, api, postJson, rupees } from "./api.ts";
@@ -210,7 +211,7 @@ function Join({ onJoin }: { onJoin: (session: CookSession) => void }) {
         autoCapitalize="characters" autoCorrect={false} placeholder="ABC123" />
       {error && <Text style={[s.error, s.centerText]}>{error}</Text>}
       <Pressable style={[s.bigBtn, (code.trim().length !== 6 || busy) && s.disabled]} disabled={code.trim().length !== 6 || busy} onPress={join}>
-        <Text style={s.bigBtnText}>{busy ? "…" : "जुड़ें"}</Text>
+        <Text style={s.bigBtnText}>{busy ? "…" : "Join · చేరండి · जुड़ें"}</Text>
       </Pressable>
       <Pressable onPress={() => onJoin({ id: DEMO_HOUSEHOLD, lang: "hi" })}><Text style={[s.link, s.centerText]}>Demo kitchen · డెమో · डेमो</Text></Pressable>
     </View>
@@ -355,10 +356,9 @@ function Cook({ householdId, lang }: { householdId: string; lang: Lang }) {
         c.actions.map((card) => ({ card, status: c.status[card.id], tracking: c.tracking?.[card.id], hasCart: c.actions.some((a) => a.type === "cart") }))
       )].flatMap(({ card, status, tracking, hasCart }) => {
         const progress = tracking?.state;
-        if (card.type === "cart" && progress) return [
+        if (card.type === "cart" && (progress || tracking?.receipt)) return [
           <View key={card.id} style={s.card}>
-            <Text style={s.ok}>{copy[progress]}</Text>
-            <Text style={s.body}>{card.cart.lines.map((line) => line.item).join(", ")}</Text>
+            <GroceryReceipt receipt={tracking?.receipt} state={progress} cookLang={lang} />
           </View>,
         ];
         if (card.type !== "question" || status !== "pending") return [];
@@ -405,9 +405,10 @@ function Owner({ householdId, ownerToken, instamartAvailable, alert }: { househo
     if (inFlight.current) return;
     inFlight.current = true;
     try {
+      const options = ownerToken ? { headers: { authorization: "Bearer " + ownerToken } } : undefined;
       const [c, l] = await Promise.all([
-        api<Call[]>(`/calls?householdId=${householdId}`),
-        api<typeof loose>(`/households/${householdId}/actions`),
+        api<Call[]>(`/calls?householdId=${householdId}`, options),
+        api<typeof loose>(`/households/${householdId}/actions`, options),
       ]);
       setCalls(c);
       setLoose(l);
@@ -575,9 +576,10 @@ function Card({ card, status, busy, error, onApprove, onAnswer, onReload, ownerT
         </View>
         <Text style={s.body}>{orderStatus(order)}</Text>
         <PackLines cart={order.cart} />
+        {(order.cart as ReviewCart).held?.map((line, i) => <Text key={i} style={s.warn}>Left out · {line.raw || line.item} · {line.reason}</Text>)}
         <View style={s.rowBetween}>
           <Text style={s.h3}>Total {rupees(order.cart.total)} <Text style={s.muted}>· cash on delivery</Text></Text>
-          {householdId === DEMO_HOUSEHOLD && order.cart.platform === "mock" && (order.cart as ReviewCart).reviewId && action("Confirm demo order", "Confirmed ✓", () => onApprove({ reviewId: (order.cart as ReviewCart).reviewId }))}
+          {householdId === DEMO_HOUSEHOLD && order.cart.platform === "mock" && order.cart.lines.length > 0 && (order.cart as ReviewCart).reviewId && action("Confirm demo order", "Confirmed ✓", () => onApprove({ reviewId: (order.cart as ReviewCart).reviewId }))}
         </View>
       </>
     );

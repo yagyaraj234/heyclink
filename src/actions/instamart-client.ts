@@ -20,7 +20,7 @@ export type RetailCart = {
   cartWarning?: { message: string };
   unserviceableItems?: CartItem[];
   removedOutOfStockItems?: CartItem[];
-  reducedQuantityItems?: { itemName: string; cappedQuantity: number }[];
+  reducedQuantityItems?: { spinId: string; requestedQuantity: number; itemName: string; cappedQuantity: number }[];
 };
 export type Variation = {
   skuId: string;

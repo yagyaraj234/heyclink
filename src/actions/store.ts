@@ -1,32 +1,52 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { InstamartIntent } from "./instamart-intent.ts";
+import { priceCart, purchasedQuantity, requestsFromCart, reviewOf } from "./cart.ts";
 import type { ReviewedLine } from "./cart.ts";
 import { openAlerts } from "./alerts.ts";
 import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
-import type { ActionCard, CallResult, Cart, GroceryLine, Household } from "../contracts.ts";
+import type { ActionCard, CallResult, Cart, GroceryLine, Household, Unit } from "../contracts.ts";
 import householdJson from "../../fixtures/household.json" with { type: "json" };
 
 /** Fixed join code for the seeded fixture household, so the cook role can be demoed on h1. */
 export const DEMO_CODE = "TADKA2";
 
+export type ReceiptLine = Household["history"][number]["lines"][number] & {
+  pack: {count: number; size: number; unit: Unit};
+  price?: number;
+};
+export interface GroceryReceipt {
+  receiptId: string;
+  source: "manual" | "instamart";
+  lines: ReceiptLine[];
+  total?: string;
+  fees?: {label: string; value: string}[];
+  address?: string;
+  eta?: string;
+}
+
+export const cartRevision = (cart: Cart) => createHash("sha256").update(JSON.stringify(cart)).digest("hex");
 // done = approved (cart/advance) or answered (question). cartId links ingredient questions to a standalone meal cart.
 // choices = per question option, the line it adds to the cart (null = adds nothing). at = when addAction stored it.
 // placing = an order checkout is in flight (see placeOrder).
 export type Entry = {
   card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: boolean; at?: string;
-  tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string };
+  refreshedBill?: boolean;
+  tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string; receipt?: GroceryReceipt };
 };
 /** call.actions is rebuilt from the action rows, so a card edited through its Entry shows up in the call. */
 export type StoredCall = { call: CallResult; at: string; entries: Entry[] };
 
-function purchasedLines(cart: Cart): Household["history"][number]["lines"] {
-  return cart.lines.map(line => {
-    const { pack } = line as Partial<ReviewedLine>;
-    return {
-      item: line.item, qty: pack ? pack.count * pack.size : line.qty, unit: pack?.unit ?? line.unit,
-      ...(line.brand && {brand: line.brand}),
-    };
+export function manualReceipt(cart: Cart): GroceryReceipt {
+  const lines = cart.lines.map(line => {
+    const { pack = {count: 1, size: line.qty, unit: line.unit} } = line as Partial<ReviewedLine>;
+    return { item: line.item, qty: pack.count * pack.size, unit: pack.unit, pack, price: line.price,
+      ...(line.brand && {brand: line.brand}) };
   });
+  return { source: "manual", lines, total: `₹${cart.total}`, receiptId: cartRevision(cart) };
+}
+function historyLines(receipt: GroceryReceipt): Household["history"][number]["lines"] {
+  return receipt.lines.map(({item,qty,unit,brand}) => ({item,qty,unit,...(brand && {brand})}));
 }
 
 /** Households, calls and actions as JSON rows in node:sqlite. ":memory:" for tests. */
@@ -47,6 +67,19 @@ export function openStore(path = ":memory:") {
     CREATE INDEX IF NOT EXISTS calls_household ON calls(household);
     CREATE INDEX IF NOT EXISTS actions_call ON actions(call, pos);
   `);
+
+  // Older claims deliberately have no proof. Never infer their retailer contents from a local draft.
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const fields = db.prepare("PRAGMA table_info(instamart_prepared)").all();
+    if (!fields.some(f => f.name === "intent")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN intent TEXT");
+    if (!fields.some(f => f.name === "receipt")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN receipt TEXT");
+    if (!fields.some(f => f.name === "readToken")) db.exec("ALTER TABLE instamart_prepared ADD COLUMN readToken TEXT");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 
   type Row = { data: string };
   const one = <T>(sql: string, ...args: SQLInputValue[]) => {
@@ -86,8 +119,35 @@ export function openStore(path = ":memory:") {
     saveInstamartLink: (id: string, sealed: string) =>
       void db.prepare("INSERT OR REPLACE INTO instamart_links VALUES(?,?)").run(id, sealed),
     // Keep the claim after an upstream timeout: a repeat could add the same packs twice.
-    claimInstamart: (cart: string, revision: string) =>
-      db.prepare("INSERT INTO instamart_prepared VALUES (?,?) ON CONFLICT DO NOTHING").run(cart, revision).changes === 1,
+    claimInstamart: (cart: string, revision: string, intent?: InstamartIntent) =>
+      db.prepare("INSERT INTO instamart_prepared (cart, revision, intent) VALUES (?,?,?) ON CONFLICT DO NOTHING")
+        .run(cart, revision, intent ? JSON.stringify(intent) : null).changes === 1,
+    instamartIntent: (cart: string) => one<InstamartIntent>("SELECT intent AS data FROM instamart_prepared WHERE cart=? AND intent IS NOT NULL", cart),
+    saveInstamartIntent(cart: string, intent: InstamartIntent) {
+      db.prepare("UPDATE instamart_prepared SET intent=?, receipt=NULL, readToken=NULL WHERE cart=?").run(JSON.stringify(intent), cart);
+    },
+    instamartReceipt: (cart: string, revision: string) =>
+      one<GroceryReceipt>("SELECT receipt AS data FROM instamart_prepared WHERE cart=? AND revision=? AND receipt IS NOT NULL", cart, revision),
+    beginInstamartReview(cart: string, revision: string) {
+      const token = randomUUID();
+      const entry = store.action(cart);
+      if (!entry || entry.done || entry.card.type !== "cart" || cartRevision(entry.card.cart) !== revision ||
+          !db.prepare("UPDATE instamart_prepared SET receipt=NULL, readToken=? WHERE cart=? AND revision=?")
+            .run(token, cart, revision).changes) throw Object.assign(new Error("Cart changed. Reopen the current review."), {status: 409});
+      return token;
+    },
+    isInstamartReviewCurrent: (cart: string, revision: string, token: string) =>
+      !!db.prepare("SELECT 1 FROM instamart_prepared WHERE cart=? AND revision=? AND readToken=?").get(cart, revision, token),
+    saveInstamartReceipt(cart: string, revision: string, receipt: Omit<GroceryReceipt, "receiptId">, token?: string) {
+      const entry = store.action(cart);
+      if (!entry || entry.done || entry.card.type !== "cart" || cartRevision(entry.card.cart) !== revision ||
+          !receipt.lines.length || receipt.source !== "instamart") throw Object.assign(new Error("Cart changed. Review in Instamart again."), {status: 409});
+      const encoded = JSON.stringify(receipt);
+      const receiptId = createHash("sha256").update(revision).update(encoded).digest("hex");
+      const saved = db.prepare("UPDATE instamart_prepared SET receipt=? WHERE cart=? AND revision=? AND readToken IS ?")
+        .run(JSON.stringify({...receipt,receiptId}), cart, revision, token ?? null);
+      if (!saved.changes) throw Object.assign(new Error("Instamart claim changed."), {status: 409});
+    },
     instamartClaimed: (cart: string) =>
       (db.prepare("SELECT revision FROM instamart_prepared WHERE cart=?").get(cart) as { revision: string } | undefined)?.revision,
     isOwner(id: string, authorization: string | undefined): boolean {
@@ -103,17 +163,18 @@ export function openStore(path = ":memory:") {
       for (const item of extraction.stockouts ?? []) {
         const receipt = db.prepare(`SELECT id,data FROM actions WHERE household=? AND data->>'$.tracking.state'='delivered'
           AND data->>'$.tracking.deliveredAt'<=? AND EXISTS (
-            SELECT 1 FROM json_each(data,'$.card.cart.lines') WHERE value->>'$.item'=?)
+            SELECT 1 FROM json_each(COALESCE(data->'$.tracking.receipt.lines', CASE WHEN NOT EXISTS (
+              SELECT 1 FROM instamart_prepared WHERE cart=actions.id) THEN data->'$.card.cart.lines' END))
+            WHERE value->>'$.item'=?)
           ORDER BY data->>'$.tracking.deliveredAt' DESC LIMIT 1`).get(householdId, at, item) as {id:string;data:string}|undefined;
         if (!receipt) continue;
         const entry: Entry = JSON.parse(receipt.data);
         if (entry.card.type !== "cart") continue;
-        const bought = purchasedLines(entry.card.cart).filter(l => l.item === item);
-        const first = bought[0]!;
-        if (bought.some(line => line.unit !== first.unit)) continue;
-        const qty = bought.reduce((sum,line) => sum + line.qty,0);
+        const bought = historyLines(entry.tracking?.receipt ?? manualReceipt(entry.card.cart)).filter(l => l.item === item);
+        const quantity = purchasedQuantity(bought);
+        if (!quantity) continue;
         const days = (Date.parse(at) - Date.parse(entry.tracking!.deliveredAt!)) / 86_400_000;
-        db.prepare("INSERT OR IGNORE INTO usage_samples VALUES (?,?,?,?,?,?)").run(householdId,receipt.id,item,qty,first.unit,days);
+        db.prepare("INSERT OR IGNORE INTO usage_samples VALUES (?,?,?,?,?,?)").run(householdId,receipt.id,item,quantity.qty,quantity.unit,days);
       }
       const items = [...new Set(extraction.groceries.map(l => l.item))];
       const usage = items.flatMap(item => db.prepare(`SELECT item,qty,unit,ROUND(AVG(days),1) AS days,COUNT(*) AS samples
@@ -144,7 +205,7 @@ export function openStore(path = ":memory:") {
       }
       db.prepare(`INSERT INTO actions SELECT ?, ?, ?, ${pos}, ? FROM actions WHERE call IS ?`)
         .run(e.card.id, e.householdId, e.callId ?? null, JSON.stringify({ ...e, at: new Date().toISOString() }), e.callId ?? null);
-      if (e.card.type === "cart" && e.card.cart.lines.length) alerts.queue(e.householdId, e.card.id, "ready", Date.now());
+      if (e.card.type === "cart" && e.callId && e.card.cart.lines.length) alerts.queue(e.householdId, e.card.id, "ready", Date.now());
     },
     /** Confirmed (approved) scheduled orders due by `now` (ISO, UTC) and not already being placed. */
     dueOrders: (now: string) =>
@@ -156,13 +217,50 @@ export function openStore(path = ":memory:") {
       (db.prepare("SELECT data FROM actions WHERE household = ? AND call IS NULL ORDER BY rowid DESC").all(householdId) as Row[]).map((r) => JSON.parse(r.data) as Entry),
     saveAction: (e: Entry) => void db.prepare("UPDATE actions SET data = ? WHERE id = ?").run(JSON.stringify(e), e.card.id),
 
-    confirmPurchase(entry: Entry) {
+    confirmOrder(id: string) {
+      db.prepare("UPDATE actions SET data=json_set(data,'$.done',json('true')) WHERE id=? AND NOT(data->>'$.done')").run(id);
+      return store.action(id)!;
+    },
+    claimOrder(id: string) {
+      return db.prepare(`UPDATE actions SET data=json_set(data,'$.placing',json('true')) WHERE id=? AND data->>'$.done'
+        AND data->>'$.card.order.status'='scheduled' AND NOT IFNULL(data->>'$.placing',0)`).run(id).changes === 1;
+    },
+    finishOrder(entry: Entry) {
+      if (entry.card.type !== "order") throw new Error("Expected an order");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = store.action(entry.card.id);
+        if (current?.card.type === "order" && current.placing && current.card.order.status === "scheduled") {
+          // Pre-review orders already updated household history when their source cart was approved.
+          if (entry.card.order.status === "placed" && !current.refreshedBill && reviewOf(current.card.order.cart).reviewId) {
+            const household = store.household(entry.householdId)!;
+            household.history.push({at: new Date().toISOString().slice(0,10), lines: historyLines(manualReceipt(entry.card.order.cart))});
+            store.saveHousehold(household);
+          }
+          delete entry.placing;
+          store.saveAction(entry);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    confirmPurchase(entry: Entry, receipt: GroceryReceipt) {
       if (entry.card.type !== "cart") throw new Error("Expected a grocery cart");
       db.exec("BEGIN IMMEDIATE");
       try {
-        if (!store.action(entry.card.id)?.done) {
+        const current = store.action(entry.card.id);
+        if (!current || current.card.type !== "cart" || cartRevision(current.card.cart) !== cartRevision(entry.card.cart) ||
+            current.tracking?.state === "delivered" || (current.done && current.tracking?.receipt?.receiptId !== receipt.receiptId) ||
+            (!current.done && receipt.source === "instamart" &&
+             store.instamartReceipt(entry.card.id, cartRevision(current.card.cart))?.receiptId !== receipt.receiptId)) {
+          throw Object.assign(new Error("Purchase changed. Review it again."), {status: 409});
+        }
+        if (!current.done) {
           const household = store.household(entry.householdId)!;
-          household.history.push({at: new Date().toISOString().slice(0,10), lines:purchasedLines(entry.card.cart)});
+          household.history.push({at: new Date().toISOString().slice(0,10), lines:historyLines(receipt)});
           store.saveHousehold(household);
         }
         entry.done = true;
@@ -183,6 +281,26 @@ export function openStore(path = ":memory:") {
     },
   };
   store.addHousehold(householdJson as Household, DEMO_CODE); // no-op once seeded
+  // Rows from before pack review need current prices and a stable revision for the confirmation screen.
+  const oldBills = db.prepare(`SELECT data FROM actions WHERE household = ? AND NOT data->>'$.done' AND (
+    (data->>'$.card.type' = 'cart' AND data->>'$.card.cart.reviewId' IS NULL) OR
+    (data->>'$.card.type' = 'order' AND data->>'$.card.order.cart.reviewId' IS NULL))`).all(householdJson.id) as Row[];
+  if (oldBills.length) {
+    const household = store.household(householdJson.id)!;
+    for (const row of oldBills) {
+      const entry = JSON.parse(row.data) as Entry;
+      const card = entry.card;
+      if (card.type === "cart") {
+        entry.refreshedBill = true;
+        card.cart = priceCart(requestsFromCart(card.cart), household);
+        card.needsApproval = card.cart.total > household.approvalLimit;
+      } else if (card.type === "order") {
+        entry.refreshedBill = true;
+        card.order.cart = priceCart(requestsFromCart(card.order.cart), household);
+      }
+      db.prepare("UPDATE actions SET data = ? WHERE id = ? AND data = ?").run(JSON.stringify(entry), card.id, row.data);
+    }
+  }
   return store;
 }
 export type Store = ReturnType<typeof openStore>;
