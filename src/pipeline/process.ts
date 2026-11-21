@@ -7,7 +7,7 @@ import { planActions } from "../actions/plan.ts";
 import type { Ambiguous, ExtractionWithAmbiguous, RecentCall } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
-import { planMeals } from "./meals.ts";
+import { planMeals, weekday } from "./meals.ts";
 
 /** Internal extension, like ExtractionWithAmbiguous: `cookOff` = the YYYY-MM-DD the cook says she won't come. */
 export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string };
@@ -208,6 +208,11 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
   return extraction;
 }
 
+/** The cook said she's off on `date`: plan as if it were one of her off days. */
+function offOn(h: Household, date: string): Household {
+  return { ...h, cook: { ...h.cook, offDays: [...new Set([...(h.cook.offDays ?? []), weekday(date)])] } };
+}
+
 // Sarvam's sync API rejects audio over 30 s ("use the batch API"); cook notes can run longer.
 const TOO_LONG = /maximum limit of 30 seconds|batch API/i;
 
@@ -227,7 +232,7 @@ export async function processCall(input: CallInput, household: Household, ports:
   const [actions, mealPlan] = await Promise.all([
     planActions(extraction, household),
     // a failed meal plan must not cost the grocery cart
-    extraction.cookOff ? planMeals(household, extraction.cookOff, ports).catch((e: unknown) => void console.warn("planMeals failed:", e)) : undefined,
+    extraction.cookOff ? planMeals(offOn(household, extraction.cookOff), extraction.cookOff, ports).catch((e: unknown) => void console.warn("planMeals failed:", e)) : undefined,
   ]);
   if (mealPlan) actions.push({ id: randomUUID(), type: "meal-plan", plan: mealPlan, options: ["cook", "order"] });
   const t3 = performance.now();
