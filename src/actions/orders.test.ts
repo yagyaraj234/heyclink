@@ -191,7 +191,8 @@ test("two server instances on one database check out a due order once", async ()
 
   const runs = [runDue(NOW, first, swiggy), runDue(NOW, second, swiggy)];
   open();
-  await Promise.all(runs);
+  const [a, b] = await Promise.all(runs);
   assert.equal(carts.length, 1);
+  assert.equal([...a!, ...b!].filter((o) => o.status === "placed").length, 1);
   assert.equal((await orderOf(second, "due")).status, "placed");
 });
