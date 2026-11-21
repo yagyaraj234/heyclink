@@ -155,6 +155,7 @@ const additionalCases: [string, string | null][] = [
   ["फिनॉल", null],
   ["roti", null],
   ["चना", null],
+  ["होल चना", null],
   ["मखाना", null],
   ["किस्मत", null],
   ["तिल का तेल", null],

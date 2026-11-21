@@ -27,7 +27,7 @@ const aliases: Record<string, string> = {
   "green-chilli": "hari mirch|hari mirchi|hara mirch|हरी मिर्च|हरी मिर्ची|pacchi mirchi|పచ్చిమిర్చి|పచ్చి మిర్చి",
   coriander: "dhaniya|dhania|hara dhaniya|dhaniya patta|धनिया|हरा धनिया|धनिये के पत्ते|kothimeera|కొత్తిమీర",
   mint: "pudina|पुदीना|పుదీనా",
-  "curry-leaves": "kadi patta|kadipatta|curry patta|कड़ी पत्ता|करी पत्ता|karivepaku|కరివేపాకు",
+  "curry-leaves": "kadi patta|kadipatta|curry patta|कड़ी पत्ता|करी पत्ता|karivepaku|కరివేపాకు|కర్వే పాకు",
   lemon: "nimbu|neembu|नींबू|नीम्बू|nimmakaya|నిమ్మకాయ",
   cucumber: "kheera|khira|खीरा|dosakaya|దోసకాయ",
   carrot: "gajar|gaajar|गाजर|క్యారెట్",
@@ -74,7 +74,7 @@ const aliases: Record<string, string> = {
   salt: "namak|नमक|uppu|ఉప్పు",
   sugar: "chini|cheeni|चीनी|panchadara|పంచదార",
   jaggery: "gud|gur|गुड़|bellam|బెల్లం",
-  tea: "chai|chai patti|चाय|चाय पत्ती|టీ|గ్రీన్ టీ",
+  tea: "chai|chai patti|चाय|चाय पत्ती|टी|టీ|గ్రీన్ టీ",
   coffee: "कॉफी|కాఫీ",
   turmeric: "haldi|हल्दी|pasupu|పసుపు",
   "red-chilli-powder": "lal mirch powder|laal mirch powder|लाल मिर्च पाउडर|karam podi|కారం పొడి",
@@ -101,7 +101,7 @@ const aliases: Record<string, string> = {
   peanuts: "moongfali|mungfali|groundnuts|मूंगफली|मूँगफली|verusenagalu|వేరుశెనగలు",
   cashew: "kaju|काजू|jeedipappu|జీడిపప్పు",
   almonds: "badam|badaam|बादाम|బాదం",
-  raisins: "kishmish|किशमिश|kismis|किसमिस|కిస్మిస్|కిస్మిస్ పళ్ళు",
+  raisins: "kishmish|किशमिश|kismis|किसमिस|కిస్మిస్|కిస్మిస్ పళ్ళు|కిస్మిస్ పల్లు",
   coconut: "nariyal|नारियल|kobbari|కొబ్బరి",
   tamarind: "imli|इमली|chintapandu|చింతపండు",
   vermicelli: "seviyan|sewai|सेवई|सेवइयां|सेवइयाँ|semiya|సేమియా",
@@ -147,6 +147,10 @@ for (const id of itemIds) lexicon.set(normalizeAlias(id), id);
 
 // One edit can turn these cleaner names into unrelated words such as "phenol" and "final".
 const exactOnly = new Set(["phenyl", "finail"]);
+// Keep tea lookup exact across scripts.
+for (const [alias, id] of lexicon) {
+  if (id === "tea") exactOnly.add(alias);
+}
 
 export function resolveItem(raw: string): string | null {
   return resolveAlias(raw, lexicon, exactOnly);

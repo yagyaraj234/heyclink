@@ -103,6 +103,7 @@ const brandCases: [id: string, roman: string, devanagari: string, telugu: string
   ["surf-excel", "surf excel", "सर्फ एक्सेल", "సర్ఫ్ ఎక్సెల్"],
   ["taj-mahal", "taj mahal", "ताज महल", "తాజ్ మహల్"],
   ["tata", "tata", "टाटा", "టాటా"],
+  ["tata-sampann", "tata sampann", "टाटा सम्पन्न", "టాటా సంపన్న"],
   ["tide", "tide", "टाइड", "టైడ్"],
   ["vijaya", "vijaya", "विजया", "విజయ"],
   ["vim", "vim", "विम", "విమ్"],
