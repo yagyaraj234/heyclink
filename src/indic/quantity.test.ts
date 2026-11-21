@@ -120,6 +120,9 @@ const cases: [string, number, Unit][] = [
   ["రెండు ప్యాకెట్\u200cలు", 2, "packet"],
   ["rendu packetlu", 2, "packet"],
   ["మూడు చిన్న సంచులో", 3, "packet"],
+  ["మూడు చిన్న సంచులు", 3, "packet"],
+  ["మూడు సంచులు", 3, "packet"],
+  ["ఒక సంచి", 1, "packet"],
   // Telugu cardinals.
   ["ఒకటి కిలో", 1, "kg"],
   ["ఒక కిలో", 1, "kg"],

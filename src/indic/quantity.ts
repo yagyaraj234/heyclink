@@ -5,7 +5,7 @@ const unitAliases: Record<Unit, string> = {
   g: "g gram grams gm ग्राम గ్రాము గ్రాములు గ్రాముల",
   l: "l litre liter litres liters लीटर लिटर లీటర్ లీటరు లీటర్లు లీటర్ల",
   ml: "ml milliliter millilitre मिलीलीटर एमएल మిల్లీ మిల్లీలీటర్ మిల్లీలీటరు మిల్లీలీటర్లు మిల్లీలీటర్ల ఎంఎల్",
-  packet: "packet pack packets packs packetlu पैकेट ప్యాకెట్ ప్యాకెట్ల ప్యాకెట్లు సంచులో",
+  packet: "packet pack packets packs packetlu पैकेट ప్యాకెట్ ప్యాకెట్ల ప్యాకెట్లు సంచి సంచులు సంచులో",
   piece: "piece pieces pc pcs nag नग पीस ముక్క ముక్కలు పీస్ పీసు పీసులు",
   dozen: "dozen darjan दर्जन డజను డజన్ డజన్లు డజన్ల",
   bunch: "bunch bunches gaddi गड्डी गड्डियां गड्डियाँ కట్ట కట్టలు కట్టల",
@@ -138,7 +138,7 @@ export function normalizeQuantity(raw: string): { qty: number; unit: Unit } | nu
     .replace(/[\u200c\u200d]/gu, "")
     .replace(/[०-९]/gu, (digit) => String(digit.charCodeAt(0) - 0x0966))
     .replace(/[౦-౯]/gu, (digit) => String(digit.charCodeAt(0) - 0x0c66))
-    .replace(/ చిన్న సంచులో$/u, " సంచులో")
+    .replace(/ చిన్న (సంచి|సంచులు|సంచులో)$/u, " $1")
     .replace(/మిల్లీ (?=లీట\S*$)/u, "మిల్లీ")
     .replace(/^(అర|పావు|ముప్పావు|ఒకటిన్నర|రెండున్నర)(\p{Script=Telugu}+)$/u, "$1 $2");
   const match = /^(.+?)(?: |(?<=\d))([\p{L}\p{M}]+)$/u.exec(text);

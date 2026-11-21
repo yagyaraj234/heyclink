@@ -55,6 +55,7 @@ const aliases: Record<string, string> = {
   "surf-excel": "सर्फ एक्सेल|సర్ఫ్ ఎక్సెల్|surf|सर्फ|సర్ఫ్",
   "taj-mahal": "ताज महल|తాజ్ మహల్",
   tata: "टाटा|టాటా",
+  "tata-sampann": "टाटा सम्पन्न|టాటా సంపన్న",
   tide: "टाइड|టైడ్",
   vijaya: "विजया|విజయ",
   vim: "विम|విమ్",
