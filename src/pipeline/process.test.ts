@@ -378,3 +378,21 @@ test("processCall: a brand in the spoken words beats the LLM's own spelling of i
 
   assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["detergent-powder", "henko"]]);
 });
+
+test("processCall: harness rejoins an item word STT split in two (కర్వే పాకు → curry-leaves), even when itemWord is cut short", async () => {
+  // eval te-06f702d8 (openai STT); both lines are live replies: item null, once with itemWord cut to "పాకు"
+  const { stt } = fakeStt("రేపటికి డెలివరీ అవ్వవలసిన ఆర్డర్ బల్లి చేసి, అందులో ... కి బదులు ఐదు వందల గ్రాముల ఫ్రెషో కర్వే పాకు యాడ్ చేయి.", "te");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "ఐదు వందల గ్రాముల ఫ్రెషో కర్వే పాకు", requested: true, itemWord: "ఫ్రెషో కర్వే పాకు", qtyPhrase: "ఐదు వందల గ్రాముల", item: null, qty: 500, unit: "g", brand: "fresho", confidence: 0.5 },
+      { raw: "ఐదు వందల గ్రాముల ఫ్రెషో కర్వే పాకు", requested: true, itemWord: "పాకు", qtyPhrase: "ఐదు వందల గ్రాముల", item: null, qty: 500, unit: "g", brand: "fresho", confidence: 0.35 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1", lang: "te" }, h, { stt, llm });
+
+  const want = ["curry-leaves", 500, "g", "fresho"];
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit, g.brand]), [want, want]);
+});

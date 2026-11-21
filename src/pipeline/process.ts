@@ -98,11 +98,14 @@ function spokenBrand(text: string): string | undefined {
   return undefined;
 }
 
-/** "Tata Tea" → tea, "Amul doodh" → milk: Hindi noun phrases end in the item, so try ever-shorter tails. */
-function resolveTail(itemWord: string): string | null {
-  const w = itemWord.trim().split(/\s+/);
-  for (let i = 1; i < w.length; i++) {
-    const id = resolveItem(w.slice(i).join(" "));
+/**
+ * "Tata Tea" → tea, "Amul doodh" → milk: Hindi/Telugu noun phrases end in the item, so try ever-shorter tails,
+ * each also with its spaces removed: STT splits compounds (కరివేపాకు heard as "కర్వే పాకు").
+ */
+function resolveTail(phrase: string): string | null {
+  const w = phrase.trim().split(/\s+/);
+  for (let i = 0; i < w.length; i++) {
+    const id = resolveItem(w.slice(i).join(" ")) ?? resolveItem(w.slice(i).join(""));
     if (id) return id;
   }
   return null;
@@ -113,7 +116,7 @@ function toLine(l: LlmLine, harness: boolean): GroceryLine[] {
   // a known brand in front means the tail is the item; otherwise trust the LLM before guessing from a tail
   const branded = harness && spokenBrand(l.itemWord) !== undefined;
   const item = harness
-    ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord))
+    ? (resolveItem(l.itemWord) ?? (branded ? resolveTail(l.itemWord) : null) ?? l.item ?? resolveTail(l.itemWord) ?? resolveTail(l.raw))
     : l.item;
   if (!item || !(ITEMS as string[]).includes(item)) return [];
   // the spoken word beats the LLM's transliteration of it (हैंको vs "hanco")
