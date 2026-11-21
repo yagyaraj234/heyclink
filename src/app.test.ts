@@ -723,3 +723,24 @@ test("choosing a meal plan with a bulk ingredient asks the cook and rebuilds its
   assert.equal(answered.cart.id, reply.cart.id);
   assert.equal(answered.cart.cart.total, 66);
 });
+
+test("removing the last item leaves the cart empty and pending until a cook clarification adds an item", async (t) => {
+  const groceries: Extraction["groceries"] = [
+    { raw: "onion", item: "onion", qty: 500, unit: "g", confidence: 1 },
+    { raw: "methi", item: "methi", qty: 1, unit: "bunch", confidence: 0.3 },
+  ];
+  const { post, close } = await serve(fakeStt(), { llm: llmReplying({ groceries, notes: [] }) });
+  t.after(close);
+  const call = await (await post("/calls", { householdId: "h1", transcript: "onion and methi" })).json();
+  const [cart, question] = call.actions;
+  const edited = await post(`/actions/${cart.id}/review`, { reviewId: cart.cart.reviewId, edits: [{ index: 0, qty: 0, unit: "g" }] });
+  assert.equal(edited.status, 200);
+  const empty = (await edited.json()).cart.cart;
+  assert.deepEqual([empty.lines, empty.total], [[], 0]);
+  const approve = `/actions/${cart.id}/approve`;
+  assert.equal((await post(approve, { reviewId: empty.reviewId })).status, 409);
+  assert.equal((await post(approve, { reviewId: empty.reviewId, order: "now" })).status, 409);
+  const answered = await (await post(`/actions/${question.id}/answer`, { option: "Yes, add it" })).json();
+  assert.equal(answered.cart.id, cart.id);
+  assert.equal(answered.cart.cart.total, 18);
+});

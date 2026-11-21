@@ -200,9 +200,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     }
     const household = store.household(entry.householdId)!;
     const next = priceCart(lines.filter(l => l.qty > 0), household);
-    if (next.held.length || !next.lines.length) {
-      return void res.status(422).json({ error: next.held[0]?.reason ?? "Choose a household quantity and keep at least one item." });
-    }
+    if (next.held[0]) return void res.status(422).json({ error: next.held[0].reason });
     next.held = current.held ?? [];
     card.cart = next;
     card.needsApproval = next.total > household.approvalLimit;
@@ -229,6 +227,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     }
     if (card.type === "cart" || card.type === "order") {
       const cart = reviewOf(card.type === "cart" ? card.cart : card.order.cart);
+      if (!cart.lines.length) return void res.status(409).json({ error: "This cart is empty." });
       if (!entry.done && !matchesHouseholdBill(cart)) return void res.status(409).json({ error: "Review the current quantities and prices." });
       if ((req.body?.reviewId !== undefined || (card.type === "order" && cart.reviewId && !entry.done))
           && cart.reviewId !== req.body?.reviewId) {
