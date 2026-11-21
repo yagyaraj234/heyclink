@@ -13,6 +13,7 @@ import type { ActionCard, CallInput, CallResult, Household, Lang, Llm, Stt } fro
 import { matchesHouseholdBill, priceCart, requestsFromCart, reviewOf } from "./actions/cart.ts";
 import { groceryPlan, quantityQuestion, spokenOption } from "./actions/plan.ts";
 import { planMeals } from "./pipeline/meals.ts";
+import { wordKey } from "./pipeline/process.ts";
 import { placeOrder } from "./actions/orders.ts";
 import { mockSwiggy } from "./actions/swiggy.ts";
 import type { Swiggy } from "./actions/swiggy.ts";
@@ -23,7 +24,7 @@ import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
 /** Lane 1's processCall (src/pipeline/process.ts) satisfies this; tests inject it with fake ports. */
 export type ProcessCall = (
-  input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options?: { harness?: boolean; recent?: RecentCall[] },
+  input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options?: { harness?: boolean; recent?: RecentCall[]; words?: Record<string, string> },
 ) => Promise<CallResult>;
 
 export interface AppDeps {
@@ -197,6 +198,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         transcript: c.transcript.text,
         lines: c.extraction.groceries.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
       })),
+      words: await store.words(household),
     };
     // Plain also forgets household memory, so its cart gets no remembered brands. Cook, UPI and approval limit stay.
     const ctx: Household = options.harness ? household
@@ -228,6 +230,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
         const question = questions[q++];
         entry.choices = question?.choices;
         entry.heldIndex = question?.heldIndex;
+        if (question?.word) entry.word = wordKey(question.word);
       }
       await store.addAction(entry);
     }
@@ -454,6 +457,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       }
       const lines = [...(previous ? requestsFromCart(previous) : []), { ...line, confidence: 1 }];
       const household = (await store.household(householdId))!;
+      if (entry.word) await store.voteWord(household, entry.word, line.item);
       const next = groceryPlan({ groceries: lines, notes: [] }, household);
       if (next.questions.length) {
         const followUp = next.questions[0]!;

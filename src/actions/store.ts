@@ -33,6 +33,7 @@ export const cartRevision = (cart: Cart) => createHash("sha256").update(JSON.str
 export type Entry = {
   card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: string; at?: string;
   refreshedBill?: boolean;
+  word?: string; // wordKey of the spoken word a which-one question settles
   selectedMeal?: MealChoice;
   tracking?: { state?: "ordered" | "delivered"; remindAt?: string; deliveredAt?: string; receipt?: GroceryReceipt };
 };
@@ -80,6 +81,7 @@ const SCHEMA = `
     seq bigint GENERATED ALWAYS AS IDENTITY, household text NOT NULL, receipt text NOT NULL, item text NOT NULL,
     qty double precision NOT NULL, unit text NOT NULL, days double precision NOT NULL, PRIMARY KEY (receipt, item)
   );
+  CREATE TABLE IF NOT EXISTS word_votes (household text NOT NULL, word text NOT NULL, item text NOT NULL, lang text NOT NULL, cook text, at text NOT NULL, PRIMARY KEY (household, word));
   CREATE INDEX IF NOT EXISTS samples_by_household ON usage_samples (household, item);
   CREATE INDEX IF NOT EXISTS calls_household ON calls (household);
   CREATE INDEX IF NOT EXISTS actions_call ON actions (call, pos);
@@ -226,6 +228,15 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
       return !!token && !!(await q("SELECT 1 FROM owner_keys WHERE household = $1 AND hash = $2",
         id, createHash("sha256").update(token).digest("hex"))).rowCount;
     },
+    /** The household's latest answer for this spoken word replaces its earlier one. */
+    voteWord: async (h: Household, word: string, item: string) =>
+      void await q(`INSERT INTO word_votes VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (household, word) DO UPDATE SET item = excluded.item, at = excluded.at`, h.id, word, item, h.cook.lang, h.cook.phone ?? null, new Date().toISOString()),
+    /** wordKey → item id: the words this household taught. */
+    async words(h: Household): Promise<Record<string, string>> {
+      const rows = (await q<{word: string; item: string}>("SELECT word, item FROM word_votes WHERE household = $1", h.id)).rows;
+      return Object.fromEntries(rows.map(r => [r.word, r.item]));
+    },
     saveHousehold: async (h: Household) => void await q("UPDATE households SET data = $1 WHERE id = $2", JSON.stringify(h), h.id),
 
     /** Stores the call; its cards are stored separately with addAction. */
@@ -368,6 +379,7 @@ export async function openStore({ url, schema }: { url?: string; schema?: string
     /** Drops the fixture household's calls and actions and restores its fixture data. */
     resetDemo: () => tx(async () => {
       await q("DELETE FROM usage_samples WHERE household = $1", householdJson.id);
+      await q("DELETE FROM word_votes WHERE household = $1", householdJson.id);
       await q("DELETE FROM calls WHERE household = $1", householdJson.id);
       await q("DELETE FROM actions WHERE household = $1", householdJson.id);
       await store.saveHousehold(householdJson as Household);
