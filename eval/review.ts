@@ -16,13 +16,14 @@ const CACHE = "eval/out/review-cache";
 const items = new Set(readJson<string[]>("fixtures/items.json"));
 const units = new Set<string>(UNITS);
 
-// Same rules prelabel.ts drafted against; they match fixtures/cases.
+// Label rulings (integrator, 2026-11-21). Price queries match fixtures/cases.
 const RULES = `- A price or availability question that names a quantity still produces a line.
 - Drop lines whose item has no id in fixtures/items.json. Never force a near id.
-- Keep a brand only if the speaker said it. Drafts saw household brands (atta=aashirvaad, milk=amul, rice=india-gate), so delete leaked ones.
+- Keep a brand only if the speaker said it, as its id from src/indic/brands.ts (else a plain slug). Drafts saw household brands (atta=aashirvaad, milk=amul, rice=india-gate), so delete leaked ones.
 - "Repeat my last order" with no item spoken: no line. The draft may have filled it in from household history.
-- Replace X with Y: the line is Y, with Y's quantity, if Y has an item id. X is not a line.
-- No usable grocery intent, or audio you'd not trust: drop.`;
+- Replace X with Y: one line for Y, with Y's quantity, if Y has an item id; else no line. X is never a line.
+- Remove or cancel X: no line.
+- No usable grocery intent (a complaint, a cooking story), or audio you'd not trust: drop.`;
 
 interface Check {
   gloss: string;
