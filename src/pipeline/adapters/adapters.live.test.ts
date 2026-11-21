@@ -11,7 +11,7 @@ import { sarvamStt } from "./sarvam-stt.ts";
 import { openaiStt } from "./openai-stt.ts";
 import { whisperCppStt } from "./whisper-cpp-stt.ts";
 
-const skip = !process.env.LIVE;
+const skip = process.env.LIVE !== "1";
 const wav = fileURLToPath(new URL("../samples/hi_bigbasket_1.wav", import.meta.url)); // "मैं दस पैकेट डाबर अश्वगंधा टैबलेट्स ख़रीदना चाहता हूँ"
 const keywords = ["dabur", "ashwagandha"];
 
