@@ -240,14 +240,10 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
       const cart = entry.card.cart as typeof entry.card.cart & {reviewId?: string};
       if (cart.reviewId && req.body?.reviewId !== cart.reviewId) return void res.status(409).json({error: "Cart changed. Review the current items first."});
       if (tracking.state === "delivered") return void res.status(409).json({error: "Already delivered"});
-      if (!entry.done) {
-        const home = store.household(entry.householdId)!;
-        home.history.push({at: new Date().toISOString().slice(0,10), lines: entry.card.cart.lines.map(({item,qty,unit,brand}) => ({item,qty,unit,brand}))});
-        store.saveHousehold(home);
-      }
-      entry.done = true;
       tracking.state = "ordered";
       delete tracking.remindAt;
+      store.confirmPurchase(entry);
+      return void res.json(tracking);
     } else if (state === "delivered") {
       if (!tracking.state) return void res.status(409).json({error: "Mark the order placed first"});
       tracking.state = "delivered";
