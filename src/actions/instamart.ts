@@ -16,6 +16,7 @@ export interface InstamartConfig {
   clientId?: string;
   network?: typeof fetch;
   staging?: boolean;
+  credentialKey?: Buffer;
 }
 const random = () => randomBytes(32).toString("base64url");
 const CALLBACK = "/instamart/callback";
@@ -26,7 +27,7 @@ interface Ticket {
   householdId: string;
   snapshot: string;
   until: number;
-  key: string; // base64 HMAC of the owner token; unlocks the sealed provider credential
+  key: string; // base64 key for this household’s sealed provider credential
 }
 interface Credential {
   access_token: string;
@@ -59,7 +60,6 @@ interface Session extends Ticket {
 }
 // Tickets and sessions live in instamart_state, so any instance can serve the next step. The database
 // sees only a hash of each browser secret and a payload sealed with a key derived from that secret.
-const rowId = (secret: string) => createHash("sha256").update(secret).digest("base64url");
 const rowKey = (secret: string) => createHmac("sha256", secret).update("instamart state v1").digest();
 const credentialKey = (s: Ticket) => Buffer.from(s.key, "base64");
 
@@ -161,7 +161,11 @@ function page(res: Response, title: string, body: string) {
 <main><h1>${title}</h1>${body}</main></html>`);
 }
 
-export function instamartRouter(config: InstamartConfig, store: Store) {
+export function instamartRouter(config: InstamartConfig, store: Store, isAuthenticatedOwner?: (req: Request) => boolean) {
+  if (isAuthenticatedOwner && config.credentialKey?.length !== 32) {
+    throw new Error("INSTAMART_CREDENTIAL_KEY must be a 32-byte hex key when Firebase auth is enabled.");
+  }
+  const rowId = (secret: string) => createHash("sha256").update(config.credentialKey ? "firebase:" + secret : secret).digest("base64url");
   const { origin } = config;
   const provider = swiggyOrigin(config.staging);
   const host = new URL(origin);
@@ -203,6 +207,7 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
   ) {
     throw new Error("INSTAMART_PUBLIC_ORIGIN must be an HTTPS origin (or HTTP localhost)");
   }
+  const linkId = (householdId: string) => provider + (config.credentialKey ? "/firebase/" : "/") + householdId;
   const router = express.Router();
   // Live provider connections, per instance; another instance reconnects from the session's token.
   const clients = new Map<string, { client: Instamart; until: number }>();
@@ -224,15 +229,15 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
 
   router.post("/actions/:id/instamart", async (req, res) => {
     const entry = await store.action(req.params.id);
-    if (!entry || !await store.isOwner(entry.householdId, req.get("authorization"))) return void res.sendStatus(403);
+    if (!entry || !(isAuthenticatedOwner ? isAuthenticatedOwner(req) : await store.isOwner(entry.householdId, req.get("authorization")))) return void res.sendStatus(403);
     if (entry.done || entry.card.type !== "cart" || !entry.card.cart.lines.length)
       return void res.status(409).json({ error: "Review an open grocery cart first" });
     const { reviewId } = entry.card.cart as Cart & { reviewId?: string };
     if (reviewId && req.body?.reviewId !== reviewId) fail(409, "The grocery list changed. Review it again.");
     const ticket = random();
-    // The phone's owner capability unlocks the provider credential; the database contains only its verifier.
-    const key = createHmac("sha256", req.get("authorization")!)
-      .update("instamart link v1 " + provider)
+    const secret = config.credentialKey ?? req.get("authorization")!;
+    const key = createHmac("sha256", secret)
+      .update("instamart link v1 " + (config.credentialKey ? linkId(entry.householdId) : provider))
       .digest("base64");
     const until = Date.now() + 120_000;
     const value: Ticket = { cartId: entry.card.id, householdId: entry.householdId, snapshot: revision(entry.card.cart), key, until };
@@ -285,14 +290,14 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
         session.address = prior.address;
       }
     }
-    const sealed = await store.linkedInstamart(provider + "/" + ticket.householdId);
+    const sealed = await store.linkedInstamart(linkId(ticket.householdId));
     if (!session.token && sealed) {
       let credential = unseal<Credential>(credentialKey(ticket), sealed);
       if (credential.expiresAt <= Date.now() + 60_000 && credential.refresh_token) {
         const renewed = await exchange({ grant_type: "refresh_token", refresh_token: credential.refresh_token });
         if (renewed) {
           credential = renewed;
-          await store.saveInstamartLink(provider + "/" + ticket.householdId, seal(credentialKey(ticket), credential));
+          await store.saveInstamartLink(linkId(ticket.householdId), seal(credentialKey(ticket), credential));
         }
       }
       if (credential.expiresAt > Date.now() + 60_000) {
@@ -381,7 +386,7 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
     s.until = Math.min(s.until, credential.expiresAt);
     await clientOf(credential.access_token, s.until);
     s.token = credential.access_token;
-    await store.saveInstamartLink(provider + "/" + s.householdId, seal(credentialKey(s), credential));
+    await store.saveInstamartLink(linkId(s.householdId), seal(credentialKey(s), credential));
     await saveSession(s);
     res.redirect(303, await store.instamartClaimed(s.cartId) ? "/instamart/prepared" : "/instamart/addresses");
   });

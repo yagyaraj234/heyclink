@@ -3,3 +3,7 @@ packages:
   - mobile
 # Expo's bundler needs a flat node_modules; pnpm's default symlinked layout breaks it.
 nodeLinker: hoisted
+# Firebase Auth works without these optional transitive postinstall scripts.
+allowBuilds:
+  '@firebase/util': false
+  protobufjs: false

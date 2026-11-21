@@ -1,6 +1,6 @@
 import type { Query, Tx } from "./store.ts";
 
-export type Push = (token: string, cartId: string, kind: "ready" | "reminder") => Promise<void>;
+export type Push = (token: string, cartId: string, kind: "ready" | "reminder", householdId?: string) => Promise<void>;
 
 // due is epoch ms, so bigint.
 export const ALERTS_SCHEMA = `
@@ -30,8 +30,8 @@ export function openAlerts(q: Query, tx: Tx) {
         WHERE EXISTS (SELECT 1 FROM owner_devices WHERE household = $3::text) ON CONFLICT DO NOTHING`, cart, kind, household, due);
     },
     async deliver(now: number, push: Push) {
-      const rows = (await q<{cart: string; kind: "ready" | "reminder"; token: string; attempts: number}>(`
-        SELECT c.cart, c.kind, c.attempts, d.token FROM cart_alerts c JOIN owner_devices d USING (household)
+      const rows = (await q<{cart: string; kind: "ready" | "reminder"; token: string; attempts: number; household: string}>(`
+        SELECT c.cart, c.kind, c.attempts, c.household, d.token FROM cart_alerts c JOIN owner_devices d USING (household)
         JOIN actions a ON a.id = c.cart WHERE NOT c.sent AND c.due <= $1 AND ${ALERTABLE}
         ORDER BY c.due LIMIT 50`, now)).rows;
       for (const row of rows) {
@@ -41,7 +41,7 @@ export function openAlerts(q: Query, tx: Tx) {
             WHERE cart = $2 AND kind = $3 AND NOT sent AND due <= $4
             AND EXISTS (SELECT 1 FROM actions a WHERE a.id = c.cart AND ${ALERTABLE})`, next, row.cart, row.kind, now)).rowCount) continue;
         try {
-          await push(row.token, row.cart, row.kind);
+          await push(row.token, row.cart, row.kind, row.household);
           await q("UPDATE cart_alerts SET sent = true WHERE cart = $1 AND kind = $2", row.cart, row.kind);
         } catch (err) {
           if (err instanceof Error && err.message === "DeviceNotRegistered") {
@@ -53,13 +53,13 @@ export function openAlerts(q: Query, tx: Tx) {
   };
 }
 
-export const expoPush: Push = async (to, cartId, kind) => {
+export const expoPush: Push = async (to, cartId, kind, householdId) => {
   const headers: Record<string,string> = {"content-type": "application/json"};
   if (process.env.EXPO_ACCESS_TOKEN) headers.authorization = "Bearer " + process.env.EXPO_ACCESS_TOKEN;
   const res = await fetch("https://exp.host/--/api/v2/push/send", {
     method: "POST", headers, signal: AbortSignal.timeout(10_000),
     body: JSON.stringify({to, title: kind === "ready" ? "Groceries ready to review" : "Your grocery reminder",
-      body: "Open Kitchen to review your household cart.", data: {cartId}, sound: "default", channelId: "groceries"}),
+      body: "Open Kitchen to review your household cart.", data: {cartId, householdId}, sound: "default", channelId: "groceries"}),
   });
   if (!res.ok) throw new Error("Expo returned " + res.status);
   const {data} = await res.json();
