@@ -440,7 +440,8 @@ test("processCall: an ambiguous word the household history doesn't settle comes 
   const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
 
   assert.deepEqual(res.extraction.groceries, []);
-  assert.deepEqual(res.extraction.ambiguous, [{ raw: "do kilo चना", qty: 2, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] }]);
+  // raw is the spoken item word alone: the card reads 'mean by "चना"?', not the whole span
+  assert.deepEqual(res.extraction.ambiguous, [{ raw: "चना", qty: 2, unit: "kg", candidates: ["kabuli-chana", "kala-chana"] }]);
 });
 
 test("processCall: 'woh daal' resolves from a recent call's line, and recent notes reach the LLM", async () => {

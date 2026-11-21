@@ -140,7 +140,9 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine |
     if (seen.length !== 1) {
       if (!candidates.length) return; // unknown product: dropped
       const qty = q?.qty ?? l.qty;
-      return qty > 0 ? { raw: l.raw, qty, unit: q?.unit ?? l.unit, candidates } : { raw: l.raw, qty: 1, unit: "packet", candidates };
+      // raw = the spoken word alone ("chana"): the question card quotes it
+      const raw = l.itemWord.trim() || l.raw;
+      return qty > 0 ? { raw, qty, unit: q?.unit ?? l.unit, candidates } : { raw, qty: 1, unit: "packet", candidates };
     }
     item = seen[0]!;
   }
