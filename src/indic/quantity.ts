@@ -5,7 +5,7 @@ const unitAliases: Record<Unit, string> = {
   g: "g gram grams gm ग्राम గ్రాము గ్రాములు గ్రాముల",
   l: "l litre liter litres liters लीटर लिटर లీటర్ లీటరు లీటర్లు లీటర్ల",
   ml: "ml milliliter millilitre मिलीलीटर एमएल మిల్లీ మిల్లీలీటర్ మిల్లీలీటరు మిల్లీలీటర్లు మిల్లీలీటర్ల ఎంఎల్",
-  packet: "packet pack packets packs पैकेट ప్యాకెట్ ప్యాకెట్ల ప్యాకెట్లు సంచులో",
+  packet: "packet pack packets packs packetlu पैकेट ప్యాకెట్ ప్యాకెట్ల ప్యాకెట్లు సంచులో",
   piece: "piece pieces pc pcs nag नग पीस ముక్క ముక్కలు పీస్ పీసు పీసులు",
   dozen: "dozen darjan दर्जन డజను డజన్ డజన్లు డజన్ల",
   bunch: "bunch bunches gaddi गड्डी गड्डियां गड्डियाँ కట్ట కట్టలు కట్టల",
@@ -17,7 +17,7 @@ for (const unit of Object.keys(unitAliases) as Unit[]) {
 }
 
 const numberWords = [
-  "ek एक ఒక ఒకటి ఒక్క ఒక్కటి", "do दो రెండు", "teen tin तीन మూడు", "char chaar चार నాలుగు",
+  "ek एक oka ఒక ఒకటి ఒక్క ఒక్కటి", "do दो rendu రెండు", "teen tin तीन మూడు", "char chaar चार నాలుగు",
   "panch paanch पांच पाँच ఐదు అయిదు", "chhe che chhah छह छः ఆరు", "sat saat सात ఏడు",
   "aath ath आठ ఎనిమిది", "nau नौ తొమ్మిది", "das dus दस పది",
   "gyarah gyaarah ग्यारह పదకొండు", "barah baarah बारह పన్నెండు", "terah तेरह పదమూడు",
@@ -72,9 +72,9 @@ const fractions = new Map([
   ["sava", 1.25], ["sawa", 1.25], ["सवा", 1.25],
   ["dedh", 1.5], ["डेढ़", 1.5],
   ["dhai", 2.5], ["dhaai", 2.5], ["ढाई", 2.5],
-  ["paavu", 0.25], ["పావు", 0.25],
+  ["paavu", 0.25], ["pavu", 0.25], ["పావు", 0.25],
   ["aara", 0.5], ["ara", 0.5], ["అర", 0.5],
-  ["ముప్పావు", 0.75], ["ఒకటిన్నర", 1.5], ["రెండున్నర", 2.5],
+  ["mukkal", 0.75], ["ముప్పావు", 0.75], ["ఒకటిన్నర", 1.5], ["రెండున్నర", 2.5],
   ["సున్నాపాయింట్ ఐదు", 0.5], ["సున్నా పాయింట్ ఐదు", 0.5],
 ]);
 const offsets = new Map([
