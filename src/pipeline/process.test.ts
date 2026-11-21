@@ -5,6 +5,7 @@ import household from "../../fixtures/household.json" with { type: "json" };
 import case01 from "../../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import case02 from "../../fixtures/cases/cook-hinglish-02.json" with { type: "json" };
 import cooking01 from "../../fixtures/cases/indicvoices-hi-cooking-01.json" with { type: "json" };
+import teBigbasket01 from "../../fixtures/cases/indicvoices-te-bigbasket-01.json" with { type: "json" };
 import { processCall } from "./process.ts";
 import { sarvamStt } from "./adapters/sarvam-stt.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
@@ -340,4 +341,24 @@ test("processCall: an unknown product whose name contains a catalog word is not 
   const item = JSON.stringify(calls[0]!.schema);
   assert.match(item, /contains a catalog word/);
   assert.match(item, /never split one product/);
+});
+
+test("processCall: harness resolves brands through the indic brand table (बीबी రాయల్ dropped, slurp-firm misspelled)", async () => {
+  const { stt } = fakeStt(`${teBigbasket01.transcript} aur ek packet slurp firm ragi atta`, "te");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: teBigbasket01.gold.groceries[0]!.raw, requested: true, itemWord: "బీబీ రాయల్ కిస్‍మిస్ పళ్ళు", qtyPhrase: "సున్నాపాయింట్ ఐదు కిలో", item: "raisins", qty: 0.5, unit: "kg", brand: null, confidence: 0.9 },
+      { raw: "ek packet slurp firm ragi atta", requested: true, itemWord: "ragi atta", qtyPhrase: "ek packet", item: "ragi-flour", qty: 1, unit: "packet", brand: "slurp-firm", confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  const gold = teBigbasket01.gold.groceries[0]!;
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit, g.brand]), [
+    [gold.item, gold.qty, gold.unit, gold.brand],
+    ["ragi-flour", 1, "packet", "slurrp-farm"],
+  ]);
 });
