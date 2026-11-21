@@ -278,3 +278,31 @@ test("processCall: vague 'thoda sa palak' with qty 0 becomes a one-bunch questio
   assert.match(question.text, /1 bunch Palak/);
   assert.doesNotMatch(question.text, /\b0 /);
 });
+
+test("processCall: Sarvam's 30 s limit falls back to the other STT and records the provider used", async () => {
+  const tooLong = new Error(
+    'sarvam stt 400: {"error":{"message":"Audio duration exceeds the maximum limit of 30 seconds. Please use the batch API for longer audio files.","code":"invalid_request_error"}}',
+  );
+  const sarvam: Stt = { transcribe: async () => { throw tooLong; } };
+  const heard: string[][] = [];
+  const openai: Stt = {
+    async transcribe(_audioPath, opts) {
+      heard.push(opts.keywords);
+      return { text: "do kilo pyaaz", lang: "hi", provider: "openai" };
+    },
+  };
+  const { llm } = fakeLlm({
+    groceries: [{ raw: "do kilo pyaaz", requested: true, itemWord: "pyaaz", qtyPhrase: "do kilo", item: "onion", qty: 2, unit: "kg", brand: null, confidence: 1 }],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "long.webm", householdId: "h1" }, h, { stt: sarvam, fallbackStt: openai, llm });
+
+  assert.equal(res.transcript.provider, "openai");
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit]), [["onion", 2, "kg"]]);
+  assert.ok(heard[0]!.includes("aashirvaad")); // fallback is biased with the same household keywords
+  // any other STT failure still surfaces
+  const broken: Stt = { transcribe: async () => { throw new Error("sarvam stt 401: bad key"); } };
+  await assert.rejects(processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt: broken, fallbackStt: openai, llm }), /401/);
+});

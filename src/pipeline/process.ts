@@ -5,6 +5,7 @@ import ITEMS from "../../fixtures/items.json" with { type: "json" };
 import { normalizeQuantity, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
+import { openaiStt } from "./adapters/openai-stt.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -162,11 +163,18 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
   return extraction;
 }
 
-export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm }, options: PipelineOptions = {}): Promise<CallResult> {
+// Sarvam's sync API rejects audio over 30 s ("use the batch API"); cook notes can run longer.
+const TOO_LONG = /maximum limit of 30 seconds|batch API/i;
+
+/** fallbackStt: used only when `stt` hits Sarvam's length limit; defaults to OpenAI. */
+export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<CallResult> {
   const t0 = performance.now();
   const opts: { lang?: Lang; keywords: string[] } = { keywords: options.harness === false ? [] : sttKeywords(household) };
   if (input.lang) opts.lang = input.lang;
-  const transcript: Transcript = await ports.stt.transcribe(input.audioPath, opts);
+  const transcript: Transcript = await ports.stt.transcribe(input.audioPath, opts).catch((e: unknown) => {
+    if (!(e instanceof Error && TOO_LONG.test(e.message))) throw e;
+    return (ports.fallbackStt ?? openaiStt()).transcribe(input.audioPath, opts);
+  });
   const t1 = performance.now();
   const extraction = await processTranscript(transcript.text, transcript.lang, household, ports, options);
   const t2 = performance.now();
