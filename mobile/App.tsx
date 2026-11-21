@@ -288,6 +288,10 @@ function Owner({ householdId }: { householdId: string }) {
   const [errors, setErrors] = useState<Record<string, string>>({}); // card id (or "feed") → message
   const [busy, setBusy] = useState<string | null>(null);
   const inFlight = useRef(false);
+  // ponytail: meal plans and their carts aren't tied to a call, so GET /calls never returns them. Held here
+  // (newest first) until reload; poll GET /households/:id/actions once actions ships it.
+  const [loose, setLoose] = useState<{ card: ActionCard; status: ActionStatus }[]>([]);
+  const settle = (id: string, status: ActionStatus) => setLoose((l) => l.map((x) => (x.card.id === id ? { ...x, status } : x)));
 
   const load = async () => {
     if (inFlight.current) return;
@@ -322,18 +326,26 @@ function Owner({ householdId }: { householdId: string }) {
   const approve = (card: ActionCard, body?: { order: string }) =>
     act(card, async () => {
       const r = await postJson<{ upiUrl?: string }>(`/actions/${card.id}/approve`, body ?? {});
+      settle(card.id, "approved");
       const upi = r.upiUrl ?? (card.type === "advance" ? card.upiUrl : undefined);
       if (upi) await Linking.openURL(upi).catch(() => { throw new Error(`Approved. No UPI app opened ${upi}`); });
     });
-  const answer = (card: ActionCard, option: string) => act(card, () => postJson(`/actions/${card.id}/answer`, { option }));
+  const answer = (card: ActionCard, option: string) =>
+    act(card, async () => {
+      const r = await postJson<{ cart?: ActionCard }>(`/actions/${card.id}/answer`, { option });
+      settle(card.id, "answered");
+      // a question's cart belongs to its call and comes back in the poll; a meal plan's "cook" cart doesn't
+      const cart = r.cart;
+      if (card.type === "meal-plan" && cart) setLoose((l) => [{ card: cart, status: "pending" }, ...l]);
+    });
 
   const [planning, setPlanning] = useState(false);
   const planTomorrow = async () => {
     setPlanning(true);
     setErrors(({ plan: _, ...rest }) => rest);
     try {
-      await postJson(`/households/${householdId}/meal-plan`, {});
-      await load();
+      const card = await postJson<ActionCard>(`/households/${householdId}/meal-plan`, {});
+      setLoose((l) => [{ card, status: "pending" }, ...l]);
     } catch (e) {
       setErrors((m) => ({ ...m, plan: `Plan tomorrow: ${(e as Error).message}` }));
     } finally {
@@ -348,7 +360,11 @@ function Owner({ householdId }: { householdId: string }) {
       </Pressable>
       {errors.plan && <Text style={s.error}>{errors.plan}</Text>}
       {errors.feed && <Text style={s.error}>{errors.feed}</Text>}
-      {calls.length === 0 && !errors.feed && <Text style={[s.muted, s.centerText]}>No notes from the cook yet.</Text>}
+      {loose.map(({ card, status }) => (
+        <Card key={card.id} card={card} status={status} busy={busy === card.id} error={errors[card.id]}
+          onApprove={(body) => approve(card, body)} onAnswer={(o) => answer(card, o)} />
+      ))}
+      {calls.length === 0 && loose.length === 0 && !errors.feed && <Text style={[s.muted, s.centerText]}>No notes from the cook yet.</Text>}
       {calls.map((call) => (
         <View key={call.callId} style={s.call}>
           <View style={s.bubble}>
