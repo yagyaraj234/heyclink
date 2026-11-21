@@ -1,0 +1,7 @@
+# Replace with your hostname (an A record pointing at the Lightsail static IP).
+# No domain? <ip-with-dashes>.sslip.io usually works, e.g. 13-232-1-2.sslip.io.
+# HTTPS is required: browsers only allow mic access (getUserMedia) on secure origins.
+vfi.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}

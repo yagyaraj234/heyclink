@@ -1,0 +1,15 @@
+[Unit]
+Description=voice-for-india API + web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=vfi
+WorkingDirectory=/opt/vfi
+# node reads the env file itself, so it must be readable by User=vfi (root:vfi 640).
+ExecStart=/usr/bin/node --env-file=/etc/vfi.env src/server.ts
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
