@@ -58,7 +58,7 @@ export const EXTRACTION_SCHEMA = {
           candidates: {
             type: "array",
             items: { type: "string", enum: ITEMS },
-            description: "2-4 catalog ids when the spoken word could mean several catalog items (चना → kabuli-chana, kala-chana; daal → toor-dal, moong-dal, masoor-dal); item is null then. [] when item is set or the product is not in the catalog",
+            description: "only for a bare generic word that several catalog ids share (चना → kabuli-chana, kala-chana; daal → toor-dal, moong-dal, masoor-dal): list 2-4 of them and leave item null. Otherwise []: anything that fits one catalog id, even loosely or under a brand, still gets that id in item",
           },
           qty: { type: "number" },
           unit: { type: "string", enum: UNITS },
