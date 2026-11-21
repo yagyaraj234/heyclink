@@ -158,6 +158,20 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     res.json(household);
   });
 
+  // ponytail: unauthenticated, like the rest of the demo API; anyone with the URL can reset h1.
+  app.post("/households/:id/reset", (req, res) => {
+    const id = req.params.id;
+    if (!households.has(id)) return void res.status(404).json({ error: "unknown household" });
+    households.set(id, structuredClone(householdJson) as Household); // only h1 exists, and it comes from the fixture
+    for (const [callId, hid] of callHousehold) {
+      if (hid !== id) continue;
+      calls.delete(callId);
+      callHousehold.delete(callId);
+    }
+    for (const [actionId, e] of actions) if (e.householdId === id) actions.delete(actionId);
+    res.json({ status: "reset" });
+  });
+
   app.use(express.static(webDir));
 
   app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {

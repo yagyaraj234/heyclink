@@ -234,3 +234,23 @@ test("serves the built web UI from webDir; API routes win over same-named files"
   assert.equal(((await (await fetch(`${base}/households/h1`)).json()) as Household).id, "h1");
   assert.deepEqual(await (await fetch(`${base}/calls?householdId=h1`)).json(), []);
 });
+
+test("POST /households/:id/reset restores the fixture household and drops its calls", async (t) => {
+  const { base, post, close } = await serve();
+  t.after(close);
+  const fixture = await (await fetch(`${base}/households/h1`)).json();
+
+  for (let round = 0; round < 2; round++) { // twice: a reset must not hand out the fixture object itself
+    const call = (await (await post("/calls", { transcript: case01.transcript, householdId: "h1" })).json()) as CallResult;
+    await post(`/actions/${call.actions[0]!.id}/approve`);
+    assert.equal(((await (await fetch(`${base}/households/h1`)).json()) as Household).history.length, 2);
+
+    const res = await post("/households/h1/reset");
+    assert.equal(res.status, 200);
+    assert.deepEqual(await (await fetch(`${base}/households/h1`)).json(), fixture);
+    assert.deepEqual(await (await fetch(`${base}/calls?householdId=h1`)).json(), []);
+    assert.equal((await fetch(`${base}/calls/${call.callId}`)).status, 404);
+    assert.equal((await post(`/actions/${call.actions[0]!.id}/approve`)).status, 404);
+  }
+  assert.equal((await post("/households/nope/reset")).status, 404);
+});
