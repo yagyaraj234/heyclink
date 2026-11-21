@@ -6,11 +6,11 @@ import householdJson from "../../fixtures/household.json" with { type: "json" };
 /** Fixed join code for the seeded fixture household, so the cook role can be demoed on h1. */
 export const DEMO_CODE = "TADKA2";
 
-// done = approved (cart/advance) or answered (question). lines = what the cart is built from.
+// done = approved (cart/advance) or answered (question). cartId links ingredient questions to a standalone meal cart.
 // choices = per question option, the line it adds to the cart (null = adds nothing). at = when addAction stored it.
 // placing = an order checkout is in flight (see placeOrder).
 export type Entry = {
-  card: ActionCard; householdId: string; callId?: string; done: boolean; lines?: GroceryLine[]; choices?: (GroceryLine | null)[]; placing?: boolean; at?: string;
+  card: ActionCard; householdId: string; callId?: string; done: boolean; cartId?: string; choices?: (GroceryLine | null)[]; heldIndex?: number; placing?: boolean; at?: string;
 };
 /** call.actions is rebuilt from the action rows, so a card edited through its Entry shows up in the call. */
 export type StoredCall = { call: CallResult; at: string; entries: Entry[] };
