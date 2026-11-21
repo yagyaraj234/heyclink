@@ -91,9 +91,9 @@ export function sttKeywords(h: Household): string[] {
 // ponytail: closed list, grow it from eval misses; a brand not listed passes through as the LLM's slug.
 const BRANDS: Record<string, string> = {
   aashirvaad: "aashirvaad", amul: "amul", britannia: "britannia", fortune: "fortune", "india gate": "india-gate",
-  surf: "surf-excel", tata: "tata", vim: "vim",
+  surf: "surf-excel", tata: "tata", vim: "vim", henko: "henko", hanko: "henko",
   आशीर्वाद: "aashirvaad", अमूल: "amul", ब्रिटानिया: "britannia", फॉर्च्यून: "fortune", "इंडिया गेट": "india-gate",
-  सर्फ: "surf-excel", टाटा: "tata", विम: "vim",
+  सर्फ: "surf-excel", टाटा: "tata", विम: "vim", हेंको: "henko", हैंको: "henko",
 };
 
 function spokenBrand(text: string): string | undefined {

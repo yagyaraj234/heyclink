@@ -306,3 +306,19 @@ test("processCall: Sarvam's 30 s limit falls back to the other STT and records t
   const broken: Stt = { transcribe: async () => { throw new Error("sarvam stt 401: bad key"); } };
   await assert.rejects(processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt: broken, fallbackStt: openai, llm }), /401/);
 });
+
+test("processCall: harness keeps a spoken brand the LLM dropped or misspelled (हैंको / hanko → henko)", async () => {
+  const { stt } = fakeStt("मेरी आइटम सूची में 0.25 किलो हैंको डिटर्जेंट बार जोड़ें। aur ek hanko bar", "hi");
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "0.25 किलो हैंको डिटर्जेंट बार", requested: true, itemWord: "हैंको डिटर्जेंट बार", qtyPhrase: "0.25 किलो", item: "detergent-powder", qty: 0.25, unit: "kg", brand: null, confidence: 0.9 },
+      { raw: "ek hanko bar", requested: true, itemWord: "detergent bar", qtyPhrase: "ek", item: "detergent-powder", qty: 1, unit: "piece", brand: "hanko", confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.brand]), [["detergent-powder", "henko"], ["detergent-powder", "henko"]]);
+});
