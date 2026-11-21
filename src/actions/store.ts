@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import type { ReviewedLine } from "./cart.ts";
 import { openAlerts } from "./alerts.ts";
 import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
-import type { ActionCard, CallResult, GroceryLine, Household } from "../contracts.ts";
+import type { ActionCard, CallResult, Cart, GroceryLine, Household } from "../contracts.ts";
 import householdJson from "../../fixtures/household.json" with { type: "json" };
 
 /** Fixed join code for the seeded fixture household, so the cook role can be demoed on h1. */
@@ -17,6 +18,16 @@ export type Entry = {
 };
 /** call.actions is rebuilt from the action rows, so a card edited through its Entry shows up in the call. */
 export type StoredCall = { call: CallResult; at: string; entries: Entry[] };
+
+function purchasedLines(cart: Cart): Household["history"][number]["lines"] {
+  return cart.lines.map(line => {
+    const { pack } = line as Partial<ReviewedLine>;
+    return {
+      item: line.item, qty: pack ? pack.count * pack.size : line.qty, unit: pack?.unit ?? line.unit,
+      ...(line.brand && {brand: line.brand}),
+    };
+  });
+}
 
 /** Households, calls and actions as JSON rows in node:sqlite. ":memory:" for tests. */
 export function openStore(path = ":memory:") {
@@ -97,7 +108,7 @@ export function openStore(path = ":memory:") {
         if (!receipt) continue;
         const entry: Entry = JSON.parse(receipt.data);
         if (entry.card.type !== "cart") continue;
-        const bought = entry.card.cart.lines.filter(l => l.item === item);
+        const bought = purchasedLines(entry.card.cart).filter(l => l.item === item);
         const first = bought[0]!;
         if (bought.some(line => line.unit !== first.unit)) continue;
         const qty = bought.reduce((sum,line) => sum + line.qty,0);
@@ -144,6 +155,24 @@ export function openStore(path = ":memory:") {
     looseActions: (householdId: string) =>
       (db.prepare("SELECT data FROM actions WHERE household = ? AND call IS NULL ORDER BY rowid DESC").all(householdId) as Row[]).map((r) => JSON.parse(r.data) as Entry),
     saveAction: (e: Entry) => void db.prepare("UPDATE actions SET data = ? WHERE id = ?").run(JSON.stringify(e), e.card.id),
+
+    confirmPurchase(entry: Entry) {
+      if (entry.card.type !== "cart") throw new Error("Expected a grocery cart");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (!store.action(entry.card.id)?.done) {
+          const household = store.household(entry.householdId)!;
+          household.history.push({at: new Date().toISOString().slice(0,10), lines:purchasedLines(entry.card.cart)});
+          store.saveHousehold(household);
+        }
+        entry.done = true;
+        store.saveAction(entry);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
 
     /** Drops the fixture household's calls and actions and restores its fixture data. */
     resetDemo() {

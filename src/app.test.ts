@@ -1134,3 +1134,22 @@ test("staging household connects to Swiggy staging", async (t) => {
   assert.equal(location.hostname, "mcp-staging.swiggy.com");
   assert.equal(location.searchParams.get("client_id"), "issued-id");
 });
+
+test("confirmed household history uses the purchased pack, even when the cook requested less", async t => {
+  const llm = llmReplying({notes: [], groceries: [{raw:"250 g onion", item:"onion", qty:250, unit:"g", confidence:1}]});
+  const {post, base, close} = await serve(fakeStt(), {llm});
+  t.after(close);
+  const owner = await (await post("/households", signup)).json();
+  const call = await (await post("/calls", {householdId:owner.id, transcript:"250 g onion"})).json();
+  const card = call.actions[0];
+  const purchase = () => fetch(base + "/actions/" + card.id + "/tracking", {
+    method:"POST", headers:{"content-type":"application/json", authorization:"Bearer " + owner.ownerToken},
+    body: JSON.stringify({state:"ordered", reviewId:card.cart.reviewId})
+  });
+  assert.equal((await purchase()).status, 200);
+  assert.equal((await purchase()).status, 200);
+  const household = await (await fetch(base + "/households/" + owner.id)).json();
+  assert.deepEqual(household.history.map((entry: Household["history"][number]) => entry.lines), [
+    [{item:"onion", qty:500, unit:"g"}]
+  ]);
+});
