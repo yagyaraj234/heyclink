@@ -153,3 +153,25 @@ test("processCall with real STT adapters: browser webm uploads are sent as audio
 
   assert.deepEqual(uploads.map((u) => [u.type, u.name]), [["audio/webm", "note.webm"], ["audio/webm", "note.webm"]]);
 });
+
+test("processCall: brand spoken as the item (Tata Tea, Surf Excel, Vim bar, Amul doodh) → generic item + brand id", async () => {
+  const { stt } = fakeStt("Didi, aadha kilo Tata Tea, ek packet Surf Excel, do Vim bar, aur do packet Amul doodh.", "hi");
+  // slips seen as "dropped or wrong": brand read as an out-of-catalog item, brand missing, brand slug keeps the product word
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "aadha kilo Tata Tea", itemWord: "Tata Tea", qtyPhrase: "aadha kilo", item: null, qty: 0.5, unit: "kg", brand: "Tata Tea", confidence: 0.9 },
+      { raw: "ek packet Surf Excel", itemWord: "Surf Excel", qtyPhrase: "ek packet", item: "detergent-powder", qty: 1, unit: "packet", brand: null, confidence: 0.9 },
+      { raw: "do Vim bar", itemWord: "Vim bar", qtyPhrase: "do", item: "dishwash-bar", qty: 2, unit: "piece", brand: "vim-bar", confidence: 0.9 },
+      { raw: "do packet Amul doodh", itemWord: "Amul doodh", qtyPhrase: "do packet", item: null, qty: 2, unit: "packet", brand: null, confidence: 0.9 },
+    ],
+    advance: null,
+    notes: [],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(
+    res.extraction.groceries.map((g) => [g.item, g.brand]),
+    [["tea", "tata"], ["detergent-powder", "surf-excel"], ["dishwash-bar", "vim"], ["milk", "amul"]],
+  );
+});
