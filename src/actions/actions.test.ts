@@ -174,3 +174,9 @@ test("buildCart holds unclear pack units and bulk volume even for goods priced b
   assert.equal(cart.lines.length, 0);
   assert.equal(cart.held.length, 3);
 });
+
+test("buildCart accepts half a dozen eggs as one six-piece pack", async () => {
+  const cart = await buildCart([{ raw: "आधा दर्जन अंडे", item: "eggs", qty: 0.5, unit: "dozen", confidence: 1 }], household());
+  assert.deepEqual(cart.lines.map(line => line.pack), [{ count: 1, size: 6, unit: "piece" }]);
+  assert.equal(cart.total, 48);
+});
