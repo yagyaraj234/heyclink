@@ -1,0 +1,13 @@
+{
+  "id": "iv-hi-bigbasket-4ee950a6",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "मेरे पिछले ऑर्डर को दो पैकेट प्युरामेट लिक्विड फ़ूड कलर के साथ दोहराएँ और अमेरिकन गार्डन माइक्रोवेव पॉपकॉर्न हटा दें",
+  "gold": {
+    "groceries": [],
+    "notes": [
+      "पिछले ऑर्डर को दोहराएँ",
+      "अमेरिकन गार्डन माइक्रोवेव पॉपकॉर्न हटा दें"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "iv-hi-bigbasket-fe7f8a43",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "क्या सौ ग्राम ओलिंडा टर्मरिक कार्डमम टी की कीमत पाँच सौ रुपए से ज़्यादा है",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "",
+        "item": "tea",
+        "qty": 100,
+        "unit": "g",
+        "confidence": 1,
+        "brand": "olinda"
+      }
+    ],
+    "notes": [
+      "क्या सौ ग्राम ओलिंडा टर्मरिक कार्डमम टी की कीमत पाँच सौ रुपए से ज़्यादा है"
+    ]
+  }
+}

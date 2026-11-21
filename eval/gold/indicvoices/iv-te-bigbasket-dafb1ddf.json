@@ -1,0 +1,27 @@
+{
+  "id": "iv-te-bigbasket-dafb1ddf",
+  "source": "eswardivi/IndicVoices telugu_train Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "te",
+  "transcript": "నా షాపింగ్ కార్టులోకి రెండు అట్టపెట్టెలు డిజైర్ గులాబ్ జామూను మరియు పది ప్యాకెట్లు బెల్లా వీటా ఆర్గానిక్ ఐలిఫ్ట్ అండర్ ఐస్ క్రీం జెల్ వెయ్యి వీటితో బాటు మూడు చిన్న సంచులో సన్‍ఫీస్ట్ ఇన్‍స్టాన్ట్ పాస్తా ట్రీట్ ఐదు కేజీల క్రెమికా మారీ క్లాసిక్ బిస్కెట్లు కూడా వెయ్యి",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "మూడు చిన్న సంచులో సన్‍ఫీస్ట్ ఇన్‍స్టాన్ట్ పాస్తా ట్రీట్",
+        "item": "pasta",
+        "qty": 3,
+        "unit": "packet",
+        "confidence": 1,
+        "brand": "sunfeast"
+      },
+      {
+        "raw": "ఐదు కేజీల క్రెమికా మారీ క్లాసిక్ బిస్కెట్లు",
+        "item": "biscuits",
+        "qty": 5,
+        "unit": "kg",
+        "confidence": 1,
+        "brand": "cremica"
+      }
+    ],
+    "notes": []
+  }
+}

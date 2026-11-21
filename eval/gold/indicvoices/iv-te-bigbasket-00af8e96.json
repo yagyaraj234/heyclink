@@ -1,0 +1,12 @@
+{
+  "id": "iv-te-bigbasket-00af8e96",
+  "source": "eswardivi/IndicVoices telugu_train Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "te",
+  "transcript": "ఐదు ప్యాకెట్ల ఆల్పెఇబ్లే ఎక్‍లెర్స్ క్యారమెల్ చూవీ ఠాఫీ ధర ఏడు వందల రూపాయలకంటే తక్కువ ఉందా",
+  "gold": {
+    "groceries": [],
+    "notes": [
+      "Is Alpenliebe Eclairs caramel chewy toffee available for less than 700 rupees?"
+    ]
+  }
+}

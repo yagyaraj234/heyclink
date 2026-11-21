@@ -1,0 +1,22 @@
+{
+  "id": "iv-te-bigbasket-06f702d8",
+  "source": "eswardivi/IndicVoices telugu_train Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "te",
+  "transcript": "రేపటికి డెలివరీ అవ్వవల్సిన ఆర్డర్ మళ్ళీ చేసి అందులో బోర్జస్ వేగన్ న్యాచురా రైస్ అండ్ ఆల్మాండ్‍కి బదులు ఐదు వందలు గ్రాముల ఫ్రెషో కరివేపాకు యాడ్ చేయి",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "ఐదు వందలు గ్రాముల ఫ్రెషో కరివేపాకు",
+        "item": "curry-leaves",
+        "qty": 500,
+        "unit": "g",
+        "confidence": 1,
+        "brand": "fresho"
+      }
+    ],
+    "notes": [
+      "రేపటికి డెలివరీ అవ్వాలి",
+      "బోర్జస్ వేగన్ న్యాచురా రైస్ అండ్ ఆల్మండ్‌కి బదులు కరివేపాకు యాడ్ చేయి"
+    ]
+  }
+}

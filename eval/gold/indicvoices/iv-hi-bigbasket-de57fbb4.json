@@ -1,0 +1,19 @@
+{
+  "id": "iv-hi-bigbasket-de57fbb4",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "शून्य दशमलव दो पाँच किलो आर्ला फ्रेश चीज़ के अलावा क्या आप एक टुकड़ा मामाअर्थ नेचुरल मॉस्क्वीटो रेपेलेंट पैच पाँच पैक निप्पो नौ वोल्ट की बैटरी और दो जार कपिवा गुलकंद जोड़ सकते हैं",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "शून्य दशमलव दो पाँच किलो आर्ला फ्रेश चीज़",
+        "item": "cheese",
+        "qty": 0.25,
+        "unit": "kg",
+        "confidence": 1,
+        "brand": "arla"
+      }
+    ],
+    "notes": []
+  }
+}

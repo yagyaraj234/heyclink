@@ -1,0 +1,13 @@
+{
+  "id": "iv-hi-bigbasket-161f346b",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "मेरे पिछले आर्डर को अस्सी ग्राम केया मिर्ची के फ्लेक्स के साथ दोहराएँ और नेसनल गार्डन्स ब्लेकबेरी फ्रूट सीड्स हटा दें",
+  "gold": {
+    "groceries": [],
+    "notes": [
+      "पिछले ऑर्डर को दोहराएँ",
+      "नेसनल गार्डन्स ब्लेकबेरी फ्रूट सीड्स हटा दें"
+    ]
+  }
+}

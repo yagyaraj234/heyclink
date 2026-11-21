@@ -1,0 +1,19 @@
+{
+  "id": "iv-hi-bigbasket-a0db9e12",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "मेरी शॉपिंग आइटम सूची में तीन पैक मोर्टीन रैट किलर केक दस किलो फ्रेश एवोकाडो और पाँच पाउच टाटा संपन्न मूँग दाल जोड़ें",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "पाँच पाउच टाटा संपन्न मूँग दाल",
+        "item": "moong-dal",
+        "qty": 5,
+        "unit": "packet",
+        "confidence": 1,
+        "brand": "tata"
+      }
+    ],
+    "notes": []
+  }
+}

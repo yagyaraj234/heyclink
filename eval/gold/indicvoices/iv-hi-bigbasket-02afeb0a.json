@@ -1,0 +1,19 @@
+{
+  "id": "iv-hi-bigbasket-02afeb0a",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "क्या आप मेरी ख़रीदारी की सूची में एक पैकेट चौबीस मंत्रा ऑर्गेनिक राजमा जोड़ सकते हैं",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "एक पैकेट चौबीस मंत्रा ऑर्गेनिक राजमा",
+        "item": "rajma",
+        "qty": 1,
+        "unit": "packet",
+        "confidence": 1,
+        "brand": "24-mantra"
+      }
+    ],
+    "notes": []
+  }
+}

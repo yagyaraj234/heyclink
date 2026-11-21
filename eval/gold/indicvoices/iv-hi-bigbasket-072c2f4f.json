@@ -1,0 +1,19 @@
+{
+  "id": "iv-hi-bigbasket-072c2f4f",
+  "source": "SPRINGLab/IndicVoices-R_Hindi Bigbasket Commands (CC-BY-4.0 upstream)",
+  "lang": "hi",
+  "transcript": "क्या जीरो दशमलव दो पाँच किलो टाटा टी चक्र गोल्ड टी की कीमत दो सौ रुपए से ज़्यादा है",
+  "gold": {
+    "groceries": [
+      {
+        "raw": "",
+        "item": "tea",
+        "qty": 0.25,
+        "unit": "kg",
+        "confidence": 1,
+        "brand": "tata"
+      }
+    ],
+    "notes": []
+  }
+}
