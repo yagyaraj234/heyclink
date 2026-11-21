@@ -7,6 +7,10 @@ import { planActions } from "../actions/plan.ts";
 import type { Ambiguous, ExtractionWithAmbiguous, RecentCall } from "../actions/plan.ts";
 import { catalog } from "../actions/cart.ts";
 import { openaiStt } from "./adapters/openai-stt.ts";
+import { planMeals } from "./meals.ts";
+
+/** Internal extension, like ExtractionWithAmbiguous: `cookOff` = the YYYY-MM-DD the cook says she won't come. */
+export type PipelineExtraction = ExtractionWithAmbiguous & { cookOff?: string };
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
 interface LlmLine extends Omit<GroceryLine, "brand" | "item"> {
@@ -21,6 +25,7 @@ interface LlmExtraction {
   groceries: LlmLine[];
   advance: { amount: number; reason: string | null } | null;
   notes: string[];
+  cookOff?: string | null; // optional in code only, like `requested`
 }
 
 const nullable = (type: string) => ({ type: [type, "null"] });
@@ -28,7 +33,7 @@ const nullable = (type: string) => ({ type: [type, "null"] });
 export const EXTRACTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["groceries", "advance", "notes"],
+  required: ["groceries", "advance", "notes", "cookOff"],
   properties: {
     groceries: {
       type: "array",
@@ -69,6 +74,7 @@ export const EXTRACTION_SCHEMA = {
       ],
     },
     notes: { type: "array", items: { type: "string" } },
+    cookOff: { ...nullable("string"), description: "YYYY-MM-DD the cook says she won't come ('kal nahi aaungi', 'Sunday chutti'), counted from Today; null if she doesn't say" },
   },
 } as const;
 
@@ -171,24 +177,30 @@ function toLine(l: LlmLine, harness: boolean, known: Set<string>): GroceryLine |
 export interface PipelineOptions {
   harness?: boolean;
   recent?: RecentCall[]; // the household's last calls (≤5), oldest to newest; harness only
+  now?: Date; // resolves "kal"/"Sunday"; tests pin it
 }
 
-export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [] }: PipelineOptions = {}): Promise<ExtractionWithAmbiguous> {
+const IST = "Asia/Kolkata";
+
+export async function processTranscript(text: string, lang: Lang, household: Household, ports: { llm: Llm }, { harness = true, recent = [], now = new Date() }: PipelineOptions = {}): Promise<PipelineExtraction> {
+  const today = `${now.toLocaleDateString("en-CA", { timeZone: IST })} (${now.toLocaleDateString("en-US", { timeZone: IST, weekday: "long" })})`;
   const context = harness ? `Household: ${householdContext(household, recent)}\n` : "";
   const known = new Set(harness ? [...household.history, ...recent].flatMap((o) => o.lines.map((l) => l.item)) : []);
   const out = await ports.llm.json<LlmExtraction>({
     system: harness ? SYSTEM + HARNESS_RULES : SYSTEM,
-    user: `${context}Language hint: ${lang}\nVoice note: ${text}`,
+    user: `${context}Today: ${today}\nLanguage hint: ${lang}\nVoice note: ${text}`,
     schema: EXTRACTION_SCHEMA,
     schemaName: "extraction",
   });
   const lines = out.groceries.map((l) => toLine(l, harness, known));
-  const extraction: ExtractionWithAmbiguous = {
+  const extraction: PipelineExtraction = {
     groceries: lines.filter((l): l is GroceryLine => l !== undefined && !("candidates" in l)),
     notes: out.notes,
   };
   const ambiguous = lines.filter((l): l is Ambiguous => l !== undefined && "candidates" in l);
   if (ambiguous.length) extraction.ambiguous = ambiguous;
+  // trust boundary: planMeals needs a real calendar date
+  if (out.cookOff && /^\d{4}-\d{2}-\d{2}$/.test(out.cookOff) && !Number.isNaN(Date.parse(out.cookOff))) extraction.cookOff = out.cookOff;
   if (out.advance) {
     extraction.advance = { amount: out.advance.amount };
     if (out.advance.reason) extraction.advance.reason = out.advance.reason;
@@ -200,7 +212,7 @@ export async function processTranscript(text: string, lang: Lang, household: Hou
 const TOO_LONG = /maximum limit of 30 seconds|batch API/i;
 
 /** fallbackStt: used only when `stt` hits Sarvam's length limit; defaults to OpenAI. */
-export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<CallResult & { extraction: ExtractionWithAmbiguous }> {
+export async function processCall(input: CallInput, household: Household, ports: { stt: Stt; llm: Llm; fallbackStt?: Stt }, options: PipelineOptions = {}): Promise<CallResult & { extraction: PipelineExtraction }> {
   const t0 = performance.now();
   const opts: { lang?: Lang; keywords: string[] } = { keywords: options.harness === false ? [] : sttKeywords(household) };
   if (input.lang) opts.lang = input.lang;
@@ -212,7 +224,12 @@ export async function processCall(input: CallInput, household: Household, ports:
   const extraction = await processTranscript(transcript.text, transcript.lang, household, ports, options);
   const t2 = performance.now();
   // question cards follow unsure-line order in `extraction`; POST /actions/:id/answer relies on it
-  const actions = await planActions(extraction, household);
+  const [actions, mealPlan] = await Promise.all([
+    planActions(extraction, household),
+    // a failed meal plan must not cost the grocery cart
+    extraction.cookOff ? planMeals(household, extraction.cookOff, ports).catch((e: unknown) => void console.warn("planMeals failed:", e)) : undefined,
+  ]);
+  if (mealPlan) actions.push({ id: randomUUID(), type: "meal-plan", plan: mealPlan, options: ["cook", "order"] });
   const t3 = performance.now();
   return {
     callId: randomUUID(),

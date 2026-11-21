@@ -470,3 +470,48 @@ test("processCall: a single candidate not in history becomes the line at confide
   assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit, g.confidence]), [["kala-chana", 2, "kg", 0.5]]);
   assert.equal(res.extraction.ambiguous, undefined);
 });
+
+const cookOffText = "bhaiya kal Sunday nahi aaungi, 2 patti dhaniya 1 kilo pyaaz le lena";
+const cookOffReply = (cookOff: string | null) => ({
+  groceries: [
+    { raw: "2 patti dhaniya", requested: true, itemWord: "dhaniya", qtyPhrase: "2 patti", item: "coriander", candidates: [], qty: 2, unit: "bunch", brand: null, confidence: 0.9 },
+    { raw: "1 kilo pyaaz", requested: true, itemWord: "pyaaz", qtyPhrase: "1 kilo", item: "onion", candidates: [], qty: 1, unit: "kg", brand: null, confidence: 0.95 },
+  ],
+  advance: null,
+  notes: ["kal Sunday nahi aaungi"],
+  cookOff,
+});
+const mealReply = {
+  cook: { meals: [{ slot: "lunch", dish: "Rajma chawal", macros: { kcal: 550, proteinG: 18, carbsG: 80, fiberG: 12, fatG: 10 }, steps: ["Soak rajma", "Pressure cook", "Serve with rice"], ingredients: [{ item: "rajma", qty: 400, unit: "g" }] }] },
+  order: { meals: [{ slot: "lunch", dish: "Veg thali", macros: { kcal: 700, proteinG: 20, carbsG: 95, fiberG: 10, fatG: 22 } }] },
+};
+/** Answers each LLM call by schema: extraction, then the meal plan (or throws for it). */
+function routedLlm(extraction: unknown, meals: unknown) {
+  const calls: { user: string; schemaName: string }[] = [];
+  const llm: Llm = {
+    async json<T>(args: { system: string; user: string; schema: object; schemaName: string }) {
+      calls.push(args);
+      if (args.schemaName !== "meal_plan") return extraction as T;
+      if (meals instanceof Error) throw meals;
+      return meals as T;
+    },
+  };
+  return { llm, calls };
+}
+
+test("processCall: the cook saying she's off tomorrow adds a meal-plan card for that day after the cart", async () => {
+  const { stt } = fakeStt(cookOffText, "hi");
+  const { llm, calls } = routedLlm(cookOffReply("2026-11-22"), mealReply);
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm }, { now: new Date("2026-11-21T10:00:00+05:30") });
+
+  assert.deepEqual(res.extraction.groceries.map((g) => [g.item, g.qty, g.unit]), [["coriander", 2, "bunch"], ["onion", 1, "kg"]]);
+  assert.equal(res.extraction.cookOff, "2026-11-22");
+  assert.match(calls[0]!.user, /Today: 2026-11-21 \(Saturday\)/);
+  assert.deepEqual(res.actions.map((a) => a.type), ["cart", "meal-plan"]);
+  const card = res.actions[1]!;
+  assert.ok(card.type === "meal-plan");
+  assert.deepEqual(card.options, ["cook", "order"]);
+  assert.equal(card.plan.date, "2026-11-22");
+  assert.equal(card.plan.order.meals[0]!.dish, "Veg thali");
+});
