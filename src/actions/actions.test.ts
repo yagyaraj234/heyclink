@@ -143,3 +143,34 @@ test("planActions asks which item a fuzzy word meant, with catalog names plus Sk
     ['Which one did Lakshmi mean by "dal"? (500 g)', ["Toor Dal", "Moong Dal", "Skip"]],
   ]);
 });
+
+test("buildCart interprets 500 kg onions as one 500 g pack and explains the change", async () => {
+  const cart = await buildCart([{ raw: "500 kilo pyaaz", item: "onion", qty: 500, unit: "kg", confidence: 1 }], household());
+  const line = cart.lines[0]!;
+  assert.deepEqual([line.qty, line.unit, line.price], [500, "g", 22]);
+  assert.deepEqual(line.pack, { count: 1, size: 500, unit: "g" });
+  assert.match(line.interpretation ?? "", /500 kg.*500 g/);
+});
+
+test("buildCart counts actual packs across brands and holds bulk or unpriceable lines without dropping safe items", async () => {
+  const line = (item: string, qty: number, unit: GroceryLine["unit"], brand?: string): GroceryLine =>
+    ({ item, raw: item, qty, unit, confidence: 1, brand });
+  const cart = await buildCart([
+    line("onion", 1250, "g"), line("onion", 1, "kg", "other"), line("rice", 3, "packet"),
+    line("eggs", 500, "piece"), line("mint", 25, "bunch"), line("unknown", 1, "packet"),
+    line("atta", 2, "kg"), line("tea", -1, "g"),
+  ], household());
+  assert.deepEqual(cart.lines.map(l => [l.item, l.pack.count]), [["onion", 3], ["atta", 2]]);
+  assert.deepEqual(cart.held.map(l => l.item), ["onion", "rice", "eggs", "mint", "unknown", "tea"]);
+});
+
+test("buildCart holds unclear pack units and bulk volume even for goods priced by the bunch", async () => {
+  const lines: GroceryLine[] = [
+    { item: "coriander", raw: "500 l dhaniya", qty: 500, unit: "l", confidence: 1 },
+    { item: "onion", raw: "two bunch onions", qty: 2, unit: "bunch", confidence: 1 },
+    { item: "eggs", raw: "aadha anda", qty: 0.5, unit: "piece", confidence: 1 },
+  ];
+  const cart = await buildCart(lines, household());
+  assert.equal(cart.lines.length, 0);
+  assert.equal(cart.held.length, 3);
+});

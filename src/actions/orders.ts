@@ -1,5 +1,6 @@
 import type { Order } from "../contracts.ts";
 import type { Entry, Store } from "./store.ts";
+import { matchesHouseholdBill } from "./cart.ts";
 import type { Swiggy } from "./swiggy.ts";
 
 /** Checks out an order card's cart once. Never retried: a failure stays "failed" for the owner to see. */
@@ -10,6 +11,7 @@ export async function placeOrder(entry: Entry, store: Store, swiggy: Swiggy): Pr
   entry.placing = true;
   store.saveAction(entry);
   try {
+    if (!matchesHouseholdBill(card.order.cart)) throw new Error("Cart quantities or prices need a new review.");
     const { orderId } = await swiggy.checkout(card.order.cart);
     card.order = { ...card.order, status: "placed", orderId, cart: { ...card.order.cart, platform: swiggy.platform } };
   } catch (err) {

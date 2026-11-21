@@ -82,3 +82,16 @@ test("a failed checkout marks the order failed and is not retried", async () => 
   assert.deepEqual(await runDue(NOW, store, swiggy), []);
   assert.equal(carts.length, 1);
 });
+
+test("runDue fails a legacy bulk order before it reaches checkout", async () => {
+  const store = openStore();
+  const { swiggy, carts } = fakeSwiggy();
+  addOrder(store, "bulk", "2026-11-22T01:00:00Z");
+  const old = store.action("bulk")!;
+  assert.ok(old.card.type === "order");
+  old.card.order.cart.lines[0]!.qty = 500;
+  store.saveAction(old);
+  const [order] = await runDue(NOW, store, swiggy);
+  assert.equal(order?.status, "failed");
+  assert.equal(carts.length, 0);
+});
