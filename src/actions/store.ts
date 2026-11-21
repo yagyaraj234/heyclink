@@ -93,7 +93,8 @@ export async function openStore({ url, schema, recoverInterruptedOrders = false 
     connectionTimeoutMillis: 15_000, // a suspended free-tier Neon compute takes a few seconds to wake
     query_timeout: 10_000,
     allowExitOnIdle: true,
-    ...(schema && { options: `-c search_path=${schema}` }),
+    // Tests open hundreds of stores and never close them; drop idle connections fast so they stay under max_connections.
+    ...(schema && { options: `-c search_path=${schema}`, idleTimeoutMillis: 100 }),
   });
   pool.on("error", (err) => console.error("Postgres idle client error:", err.message)); // Neon drops idle connections
 
