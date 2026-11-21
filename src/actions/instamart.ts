@@ -5,7 +5,7 @@ import type { Store } from "./store.ts";
 import type { Cart } from "../contracts.ts";
 import { connectInstamart, swiggyOrigin } from "./instamart-client.ts";
 import type { Instamart, RetailCart } from "./instamart-client.ts";
-import { packOption, additions, sameGrocery } from "./instamart-packs.ts";
+import { packOption, checkedItems, sameGrocery } from "./instamart-packs.ts";
 import type { PickedPack } from "./instamart-packs.ts";
 
 export interface InstamartConfig {
@@ -76,6 +76,7 @@ function invoice(s: Session, cart: RetailCart, res: Response, updated = false, s
   ) {
     fail(409, "Swiggy could not confirm a bill and delivery address. Check your cart in Instamart.");
   }
+  checkedItems(cart.items, s.options);
   const warnings = [
     cart.addressWarning,
     cart.cartWarning?.message,
@@ -429,12 +430,7 @@ export function instamartRouter(config: InstamartConfig, store: Store) {
       if (!Array.isArray(before.items) || (before.items.length && before.selectedAddressDetails?.id !== s.address)) {
         fail(409, "Check the existing cart and selected address in Swiggy first.");
       }
-      let items;
-      try {
-        items = additions(before.items, s.options, picked);
-      } catch (error) {
-        fail(409, error instanceof Error ? error.message : "Review pack sizes.");
-      }
+      const items = checkedItems(before.items, s.options, picked);
       if (revision(currentCart(s)) !== s.local || !store.claimInstamart(s.cartId, s.local))
         fail(409, "This cart changed or is already being prepared. Check Swiggy.");
       const cart = await s.client!.update(s.address, items);
