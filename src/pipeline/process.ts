@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { CallInput, CallResult, Extraction, GroceryLine, Household, Lang, Llm, Stt, Transcript } from "../contracts.ts";
 import { UNITS } from "../contracts.ts";
 import ITEMS from "../../fixtures/items.json" with { type: "json" };
-import { normalizeQuantity, resolveItem } from "./indic-stub.ts";
+import { normalizeQuantity, resolveItem, STT_KEYWORDS } from "../indic/index.ts";
 import { planActions } from "../actions/plan.ts";
 
 /** What the LLM returns. Richer than GroceryLine so the indic harness gets clean spans. */
@@ -74,7 +74,8 @@ function householdContext(h: Household) {
 
 export function sttKeywords(h: Household): string[] {
   const items = [...Object.keys(h.brands), ...Object.keys(h.pantry), ...h.history.flatMap((o) => o.lines.map((l) => l.item))];
-  return [...new Set([...Object.values(h.brands), ...items].map((w) => w.replaceAll("-", " ")))];
+  // household terms first: Sarvam keeps only the first 50 keyterms
+  return [...new Set([...[...Object.values(h.brands), ...items].map((w) => w.replaceAll("-", " ")), ...STT_KEYWORDS])];
 }
 
 function toLine(l: LlmLine, harness: boolean): GroceryLine[] {

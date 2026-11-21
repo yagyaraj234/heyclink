@@ -5,6 +5,11 @@ import household from "../../fixtures/household.json" with { type: "json" };
 import case01 from "../../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import case02 from "../../fixtures/cases/cook-hinglish-02.json" with { type: "json" };
 import { processCall } from "./process.ts";
+import { sarvamStt } from "./adapters/sarvam-stt.ts";
+import { openaiStt } from "./adapters/openai-stt.ts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const h = household as Household;
 
@@ -105,4 +110,46 @@ test("processCall: unsure lines become question cards in the order they were hea
   assert.match(questions[1]!, /woh tel/);
   const cart = res.actions[0]!;
   assert.ok(cart.type === "cart" && cart.cart.lines.length === 1 && cart.cart.lines[0]!.item === "atta");
+});
+
+test("processCall: indic harness fixes LLM slips (dedh → 1.5, hari mirch → green-chilli) to match gold", async () => {
+  const { stt, calls: sttCalls } = fakeStt(case02.transcript, case02.lang);
+  const { llm } = fakeLlm({
+    groceries: [
+      { raw: "dedh kilo pyaaz", itemWord: "pyaaz", qtyPhrase: "dedh kilo", item: "onion", qty: 1, unit: "kg", brand: null, confidence: 1 },
+      { raw: "paav kilo hari mirch", itemWord: "hari mirch", qtyPhrase: "paav kilo", item: "capsicum", qty: 250, unit: "g", brand: null, confidence: 1 },
+      { raw: "aadha litre dahi", itemWord: "dahi", qtyPhrase: "aadha litre", item: "curd", qty: 0.5, unit: "l", brand: null, confidence: 1 },
+    ],
+    advance: null,
+    notes: ["chawal bhi khatam hone wala hai"],
+  });
+
+  const res = await processCall({ audioPath: "x.wav", householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(res.extraction, case02.gold);
+  // STT is also biased toward common spoken item words, not just this household's
+  assert.ok(sttCalls[0]!.keywords.includes("hari mirch"));
+});
+
+test("processCall with real STT adapters: browser webm uploads are sent as audio/webm", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vfi-"));
+  const audioPath = join(dir, "note.webm");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(audioPath, "not really audio");
+  const saved = { ...process.env };
+  t.after(() => void (process.env = saved));
+  process.env.OPENAI_API_KEY = "test";
+  process.env.SARVAM_API_KEY = "test";
+  const uploads: { url: string; type: string; name: string }[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    const file = (init.body as FormData).get("file") as File;
+    uploads.push({ url, type: file.type, name: file.name });
+    const body = url.includes("sarvam") ? { transcript: "do kilo pyaaz", language_code: "hi-IN" } : { text: "do kilo pyaaz", languages: [{ code: "hi" }] };
+    return Response.json(body);
+  });
+  const { llm } = fakeLlm({ groceries: [], advance: null, notes: [] });
+
+  for (const stt of [sarvamStt(), openaiStt()]) await processCall({ audioPath, householdId: "h1" }, h, { stt, llm });
+
+  assert.deepEqual(uploads.map((u) => [u.type, u.name]), [["audio/webm", "note.webm"], ["audio/webm", "note.webm"]]);
 });
