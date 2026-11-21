@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import type { ActionCard, CallResult, Extraction, Household, Llm, Stt } from "./contracts.ts";
 import case01 from "../fixtures/cases/cook-hinglish-01.json" with { type: "json" };
 import { createApp } from "./app.ts";
-import type { ProcessCall } from "./app.ts";
+import type { AppDeps, ProcessCall } from "./app.ts";
 import { processCall } from "./pipeline/process.ts";
 import { openStore } from "./actions/store.ts";
 
@@ -29,13 +29,13 @@ const fakeStt = (seen: { path?: string; bytes?: string } = {}): Stt => ({
   },
 });
 
-async function serve(stt: Stt = fakeStt()) {
-  const server = createApp({ processCall, stt, llm: fakeLlm }).listen(0);
+async function serve(stt: Stt = fakeStt(), deps: Partial<AppDeps> = {}) {
+  const server = createApp({ processCall, stt, llm: fakeLlm, ...deps }).listen(0);
   await new Promise((r) => server.once("listening", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const post = (path: string, body?: unknown) =>
     fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
-  return { base, post, close: () => server.close() };
+  return { base, post, close: () => new Promise((r) => server.close(r)) };
 }
 
 test("POST /calls with a transcript returns cards; approving them pays and updates memory", async (t) => {
@@ -488,14 +488,7 @@ test("POST /households rejects bad input with 400", async (t) => {
 test("a restart on the same database keeps households, join codes, calls and approvals", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "vfi-db-"));
   t.after(() => rmSync(dir, { recursive: true }));
-  const boot = async () => {
-    const server = createApp({ processCall, stt: fakeStt(), llm: fakeLlm, store: openStore(join(dir, "vfi.db")) }).listen(0);
-    await new Promise((r) => server.once("listening", r));
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const post = (path: string, body?: unknown) =>
-      fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
-    return { base, post, close: () => new Promise((r) => server.close(r)) };
-  };
+  const boot = () => serve(fakeStt(), { store: openStore(join(dir, "vfi.db")) });
 
   const before = await boot();
   const { id, cookCode } = (await (await before.post("/households", signup)).json()) as { id: string; cookCode: string };

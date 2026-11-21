@@ -8,7 +8,8 @@ import { DIETS, GOALS, LANGS, WEEKDAYS } from "./contracts.ts";
 import type { CallInput, CallResult, GroceryLine, Household, Lang, Llm, Stt } from "./contracts.ts";
 import { cartCard, isUnsure } from "./actions/plan.ts";
 import type { ExtractionWithAmbiguous, RecentCall } from "./actions/plan.ts";
-import { fixtureHousehold, openStore } from "./actions/store.ts";
+import { openStore } from "./actions/store.ts";
+import householdJson from "../fixtures/household.json" with { type: "json" };
 import type { Entry, Store, StoredCall } from "./actions/store.ts";
 
 /** Lane 1's processCall (src/pipeline/process.ts) satisfies this; tests inject it with fake ports. */
@@ -107,7 +108,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     // harness only: the household's last calls, oldest → newest, so "woh wala" can refer back to them
     const options = mode !== "harness" ? { harness: false } : {
       harness: true,
-      recent: store.calls(householdId).slice(-RECENT).map(({ call: c, at }): RecentCall => ({
+      recent: store.calls(householdId, RECENT).reverse().map(({ call: c, at }): RecentCall => ({
         at,
         transcript: c.transcript.text,
         lines: c.extraction.groceries.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
@@ -162,7 +163,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   app.get("/calls", (req, res) => {
     const householdId = String(req.query.householdId ?? "");
     if (!store.household(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
-    res.json(store.calls(householdId).reverse().map(withStatus));
+    res.json(store.calls(householdId).map(withStatus));
   });
 
   app.get("/calls/:id", (req, res) => {
@@ -176,8 +177,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     if (!entry) return void res.status(404).json({ error: "unknown action" });
     const { card } = entry;
     if (card.type === "question") return void res.status(400).json({ error: "questions are answered, not approved" });
-    const household = store.household(entry.householdId);
-    if (!entry.done && card.type === "cart" && household) {
+    if (!entry.done && card.type === "cart") {
+      const household = store.household(entry.householdId)!;
       household.history.push({
         at: new Date().toISOString().slice(0, 10),
         lines: card.cart.lines.map(({ item, qty, unit, brand }) => ({ item, qty, unit, ...(brand && { brand }) })),
@@ -211,6 +212,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
     if (cartEntry?.done) return void res.status(409).json({ error: "cart already approved" });
     const lines = [...(cartEntry?.lines ?? []), line];
     const fresh = await cartCard(lines, store.household(householdId)!);
+    // the cart may have been approved during the await; saving our stale copy would undo that
+    if (cartEntry && store.action(cartEntry.card.id)!.done) return void res.status(409).json({ error: "cart already approved" });
     entry.done = true;
     store.saveAction(entry);
     if (cartEntry) {
@@ -235,10 +238,9 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
   });
 
   app.post("/join", (req, res) => {
-    const householdId = store.householdIdByCode(String(req.body?.code ?? "").trim().toUpperCase());
-    const household = householdId && store.household(householdId);
+    const household = store.householdByCode(String(req.body?.code ?? "").trim().toUpperCase());
     if (!household) return void res.status(404).json({ error: "unknown code" });
-    res.json({ householdId, role: "cook", cook: { name: household.cook.name, lang: household.cook.lang } });
+    res.json({ householdId: household.id, role: "cook", cook: { name: household.cook.name, lang: household.cook.lang } });
   });
 
   app.get("/households/:id", (req, res) => {
@@ -249,9 +251,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = jo
 
   // ponytail: unauthenticated, like the rest of the demo API; anyone with the URL can reset h1.
   app.post("/households/:id/reset", (req, res) => {
-    const fixture = fixtureHousehold();
-    if (req.params.id !== fixture.id) return void res.status(404).json({ error: "only the demo household can be reset" });
-    store.reset(fixture);
+    if (req.params.id !== householdJson.id) return void res.status(404).json({ error: "only the demo household can be reset" });
+    store.resetDemo();
     res.json({ status: "reset" });
   });
 
