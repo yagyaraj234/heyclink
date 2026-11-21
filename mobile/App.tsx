@@ -458,17 +458,19 @@ function Owner({ householdId, ownerToken, instamartAvailable, alert }: { househo
     }
   };
 
-  const renderCard = (card: ActionCard, status?: ActionStatus, tracking?: Tracking, fromAlert = false) =>
+  const renderCard = (card: ActionCard, status?: ActionStatus, tracking?: Tracking, fromAlert = false, pending: string[] = []) =>
     <Card key={card.id} householdId={householdId} onReload={load} ownerToken={ownerToken} instamartAvailable={instamartAvailable}
-      tracking={tracking} fromAlert={fromAlert} card={card} status={status} busy={busy === card.id} error={errors[card.id]}
+      tracking={tracking} pending={pending} fromAlert={fromAlert} card={card} status={status} busy={busy === card.id} error={errors[card.id]}
       onApprove={(body) => approve(card, body)} onAnswer={(o) => answer(card, o)} />;
+  const pendingQuestions = (call?: Call) => call?.actions.flatMap((card) =>
+    card.type === "question" && call.status[card.id] === "pending" ? [card.text] : []) ?? [];
   const fromCall = calls.find((call) => call.actions.some((a) => a.type === "cart" && a.id === alert));
   const alertCard = fromCall?.actions.find((a) => a.id === alert);
   const fromLoose = loose.find(({ card }) => card.type === "cart" && card.id === alert);
 
   return (
     <ScrollView contentContainerStyle={s.feed}>
-      {alertCard && renderCard(alertCard, fromCall?.status[alert], fromCall?.tracking?.[alert], true)}
+      {alertCard && renderCard(alertCard, fromCall?.status[alert], fromCall?.tracking?.[alert], true, pendingQuestions(fromCall))}
       {fromLoose && renderCard(fromLoose.card, fromLoose.status, fromLoose.tracking, true)}
       <OwnerAlerts householdId={householdId} ownerToken={ownerToken} />
       <Pressable style={[s.btn, s.planBtn, planning && s.disabled]} disabled={planning} onPress={planTomorrow}>
@@ -488,7 +490,7 @@ function Owner({ householdId, ownerToken, instamartAvailable, alert }: { househo
           {call.usage?.map((u) => <Text key={u.item} style={s.muted}>{u.item} · {u.qty} {u.unit} lasted about {u.days} days ({u.samples} observed {u.samples === 1 ? "delivery" : "deliveries"}).</Text>)}
           {call.extraction.notes.map((n, i) => <Text key={i} style={s.muted}>📝 {n}</Text>)}
           {call.actions.filter((card) => card.id !== alertCard?.id)
-            .map((card) => renderCard(card, call.status[card.id], call.tracking?.[card.id]))}
+            .map((card) => renderCard(card, call.status[card.id], call.tracking?.[card.id], false, card.type === "cart" ? pendingQuestions(call) : []))}
         </View>
       ))}
     </ScrollView>
@@ -514,7 +516,8 @@ function orderStatus(o: Order) {
   return o.status === "failed" ? "Failed to place" : "Cancelled";
 }
 
-function Card({ card, status, busy, error, onApprove, onAnswer, onReload, ownerToken, instamartAvailable, householdId, tracking, fromAlert }: {
+function Card({ card, status, busy, error, onApprove, onAnswer, onReload, ownerToken, instamartAvailable, householdId, tracking, fromAlert, pending }: {
+  pending: string[];
   tracking?: Tracking;
   fromAlert: boolean;
   householdId: string;
@@ -537,7 +540,7 @@ function Card({ card, status, busy, error, onApprove, onAnswer, onReload, ownerT
   );
   let body;
   if (card.type === "cart") {
-    body = <CartReview fromAlert={fromAlert} tracking={tracking} demo={householdId === DEMO_HOUSEHOLD} cardId={card.id} cart={card.cart as ReviewCart} done={done} busy={busy}
+    body = <CartReview pending={pending} fromAlert={fromAlert} tracking={tracking} demo={householdId === DEMO_HOUSEHOLD} cardId={card.id} cart={card.cart as ReviewCart} done={done} busy={busy}
       onReload={onReload} onApprove={onApprove} ownerToken={ownerToken} instamartAvailable={instamartAvailable} />;
   } else if (card.type === "advance") {
     body = (
