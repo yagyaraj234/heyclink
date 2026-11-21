@@ -108,6 +108,13 @@ export function checkedItems(existing: CartItem[], options: PickedPack[][] = [],
     piece: new Map(),
     pack: new Map(),
   };
+  const record = (item: string, physical: Size, count: number) => {
+    const ledger = totals[physical.unit];
+    ledger.set(item, (ledger.get(item) ?? 0) + physical.amount * count);
+    if (physical.unit !== "pack" && units[catalog[item]?.unit ?? ""]?.[0] === "pack") {
+      totals.pack.set(item, (totals.pack.get(item) ?? 0) + count);
+    }
+  };
   for (const item of existing) {
     const pack = parsePack(item.itemVariant);
     if (!pack || !item.skuId || !item.spinId || !Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
@@ -128,13 +135,10 @@ export function checkedItems(existing: CartItem[], options: PickedPack[][] = [],
       (expected && expected !== "pack" && expected !== pack.unit)
     )
       throw invalidCart("Confirm the existing pack sizes in Swiggy before adding groceries.");
-    const ledger = totals[pack.unit];
-    const key = canonical ?? "";
-    ledger.set(key, (ledger.get(key) ?? 0) + pack.amount * item.quantity);
+    record(canonical ?? "", pack, item.quantity);
   }
   for (const p of picked) {
-    const ledger = totals[p.size.unit];
-    ledger.set(p.item, (ledger.get(p.item) ?? 0) + p.size.amount * p.count);
+    record(p.item, p.size, p.count);
     const prior = result.find((r) => r.skuId === p.variant.skuId && r.spinId === p.variant.spinId);
     if ((prior?.quantity ?? 0) + p.count > (p.variant.maxQuantity ?? Infinity))
       throw invalidCart("The store has fewer packs available.");
@@ -145,10 +149,16 @@ export function checkedItems(existing: CartItem[], options: PickedPack[][] = [],
     const ledger = totals[unit];
     // Unknown labels may refer to the same grocery as any identified SKU of this physical unit.
     const unknown = ledger.get("") ?? 0;
-    ledger.delete("");
-    const largest = Math.max(0, ...ledger.values());
-    if (unknown + largest > limits[unit])
-      throw invalidCart("The cart exceeds the household limit for an item. Review quantities in Swiggy.");
+    for (const [item, amount] of ledger) {
+      const total = item ? amount + unknown : unknown;
+      if (total > limits[unit]) {
+        const label = item ? (catalog[item]?.name ?? item) : "Unidentified groceries";
+        const uncertainty = unknown && item ? " including unidentified packs" : "";
+        throw invalidCart(
+          `${label}: ${total} ${unit}${uncertainty}. The household limit is ${limits[unit]} ${unit}. Adjust the cart in Swiggy.`,
+        );
+      }
+    }
   }
   return result;
 }
