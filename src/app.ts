@@ -17,6 +17,7 @@ export interface AppDeps {
   stt: Stt;
   llm: Llm;
   corsOrigin?: string; // default "*": the API has no cookies or auth
+  webDir?: string; // built web UI, served after the API routes; a missing dir just 404s
 }
 
 // STT providers sniff format from the file extension. The header is client input: anything but a plain token → "bin".
@@ -27,10 +28,11 @@ const extFor = (contentType = "") => {
   return /^[a-z0-9]+$/.test(ext) ? ext : "bin";
 };
 
-export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) {
+export function createApp({ processCall, stt, llm, corsOrigin = "*", webDir = join(import.meta.dirname, "../web/dist") }: AppDeps) {
   // ponytail: in-memory state, lost on restart; swap for sqlite if the demo needs persistence.
   const households = new Map<string, Household>([[householdJson.id, structuredClone(householdJson) as Household]]);
   const calls = new Map<string, CallResult>();
+  const callHousehold = new Map<string, string>(); // callId → householdId; CallResult doesn't carry it
   // done = approved (cart/advance) or answered (question). lines = what the cart is built from; line = the question's line.
   type Entry = { card: ActionCard; callId: string; householdId: string; done: boolean; lines?: GroceryLine[]; line?: GroceryLine };
   const actions = new Map<string, Entry>();
@@ -78,6 +80,7 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) 
     }
 
     calls.set(result.callId, result);
+    callHousehold.set(result.callId, householdId);
     const { callId, extraction } = result;
     const unsure = extraction.groceries.filter(isUnsure); // question cards follow unsure-line order (planActions)
     let q = 0;
@@ -88,6 +91,13 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) 
       actions.set(card.id, entry);
     }
     res.status(201).json(result);
+  });
+
+  app.get("/calls", (req, res) => {
+    const householdId = String(req.query.householdId ?? "");
+    if (!households.has(householdId)) return void res.status(404).json({ error: `unknown household "${householdId}"` });
+    // ponytail: O(all calls) scan; fine for an in-memory demo.
+    res.json([...calls.values()].filter((c) => callHousehold.get(c.callId) === householdId).reverse());
   });
 
   app.get("/calls/:id", (req, res) => {
@@ -147,6 +157,8 @@ export function createApp({ processCall, stt, llm, corsOrigin = "*" }: AppDeps) 
     if (!household) return void res.status(404).json({ error: "unknown household" });
     res.json(household);
   });
+
+  app.use(express.static(webDir));
 
   app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
     res.status(err.status ?? 500).json({ error: err.message });
